@@ -1,0 +1,1921 @@
+libname perm 'F:\XXXX\XXXX\XXXX\Data'; 
+
+data perm.pophghlungeamb;
+set in03749.lpr3_sb_kontakt;
+if (ANSVARLIG_ENHED=579111000016002) AND (datepart(STARTTIDSPUNKT) ge '01JUN2020'd) then output;   /
+run;
+
+
+data perm.hghlungeambkol; rename personnummer_encrypted=cpr; 
+set perm.pophghlungeamb;
+if substr(aktionsdiagnose,2,3)='J44' then output;
+run;
+proc sort data=perm.hghlungeambkol out=perm.kolpop nodupkey; by cpr; run;
+
+
+data perm.biokemi; rename patient_cpr_encrypted=cpr;
+set in03749.lab_lab_dm_forsker;
+if (SAMPLINGDATE ge '01JUN2020'd) AND (ANALYSISCODE='NPU28289' OR ANALYSISCODE='NPU19748' OR ANALYSISCODE='NPU19692') then output;
+run; 
+proc sort data=perm.biokemi; by cpr; run;
+data perm.kolpop; keep cpr; set perm.kolpop; run;
+data hghbiokemi;
+merge perm.kolpop (in=pop) perm.biokemi (in=bio);
+by cpr; if pop; if bio;
+run;
+data hghbiokemi; set hghbiokemi; 
+samplinghour=hour(samplingtime);
+samplingmin=minute(samplingtime);
+run; 
+
+data perm.hghbiokemi; drop samplinghour samplingmin; set hghbiokemi;
+sampletimedate=dhms(samplingdate,samplinghour,samplingmin,0); run;
+proc sort data=perm.hghbiokemi; by cpr sampletimedate; run;
+
+data lpr3_kontakt; rename personnummer_encrypted=cpr;
+set in03749.lpr3_sb_kontakt;
+run; 
+proc sort data=lpr3_kontakt;
+by cpr; run;
+
+data hghkollpr;
+merge perm.kolpop (in=a) lpr3_kontakt;
+by cpr; if a;
+run; 
+
+data senestecpropdatering; keep cpr_opdatering;
+set in03749.opdateringsoversigt;
+if tabel='T_PERSON_STATUS' then cpr_opdatering=datepart(OpdateringsTidspunkt);
+if missing(cpr_opdatering) then delete;
+run; 
+
+proc sql noprint; 
+	create table hghkollpr_ as
+	select a.*, b.* 
+	from hghkollpr as a, senestecpropdatering as b;
+quit;
+
+data perm.hghkollpr3kontakt;
+set hghkollpr_;
+opholdstid=intck('HOUR',STARTTIDSPUNKT,SLUTTIDSPUNKT);
+run; 
+
+data hghkolindl;
+set perm.hghkollpr3kontakt; akutkont=0;
+if opholdstid>=12 then akutkont=1; 
+if prioritet eq 'ATA1' then akutkont=1;
+if datepart(starttidspunkt)<'01MAY2020'd then delete; /* en måned før øvrige pop startes, blot for at mindske data */
+if datepart(starttidspunkt)>cpr_opdatering then delete; 
+run; 
+
+data hghkolindl;
+set hghkolindl;
+VTE=0; LE=0;
+if substr(aktionsdiagnose,2,3)='I80' or substr(aktionsdiagnose,2,5)='I809B' then VTE=1;
+if substr(aktionsdiagnose,2,4) in ('I260', 'I269') then LE=1;
+run; 
+
+data perm.hghkolindl;
+set hghkolindl;
+akutvte=0;
+if akutkont=1 then akutvte=1;
+if vte=1 then akutvte=1;
+if le=1 then akutvte=1;
+run; 
+
+data kunakutvte;
+set perm.hghkolindl;
+if akutvte=1 then output;
+run; 
+
+proc sort data=kunakutvte; by cpr starttidspunkt; run; 
+
+data kunakutvte2;
+set kunakutvte;
+by cpr;
+if first.cpr then cpr_count=0;
+cpr_count+1; run; 
+
+proc freq data=kunakutvte2; tables cpr_count; run; /* der er maks 85 gentagelser af cpr */
+
+%macro indlvandret0 (ind,ud,antalfra,antaltil,datafra);
+%DO i = &antalfra %TO &antaltil;
+%let a=&ind&i.;
+%let b=&ud&i.;
+data lpr3_&a. (keep=cpr &a &b);  set &datafra;
+	if cpr_count=&i then &a=&ind;
+	if cpr_count=&i then &b=&ud;
+	if cpr_count=&i then output; 
+run;
+
+proc sort data=lpr3_&a.;
+	by cpr;
+run;  
+%end;
+
+%DO j = &antalfra %TO &antaltil;
+
+data lpr3indl&ind.&antaltil;
+merge lpr3_&ind.&antalfra - lpr3_&ind&&j.;
+	by cpr;
+run;
+%end; 
+
+%DO u = &antalfra %TO &antaltil;
+proc datasets lib=work nolist;
+delete lpr3_&ind&&u.; 
+quit;
+run;
+%end;
+%mend;
+
+%indlvandret0(starttidspunkt,sluttidspunkt,1,85,kunakutvte2)
+
+data ddimerudenakut; keep cpr ddimer sampletimedate samplingdate samplingtime; 
+set perm.hghbiokemi;
+DDIMER=value+0;
+if ANALYSISCODE='NPU28289' then output; 
+run;
+
+proc sort data=ddimerudenakut; by cpr; run;
+proc sort data=lpr3indlstarttidspunkt85; by cpr; run;
+
+data ddimerudenakut;
+merge ddimerudenakut (in=dimer) lpr3indlstarttidspunkt85;
+by cpr; if dimer; run; 
+
+data ddimerudenakut;
+set ddimerudenakut; 
+proveiinterval=0; 
+array start{85} starttidspunkt1-starttidspunkt85;
+array slut{85} sluttidspunkt1-sluttidspunkt85;
+do i = 1 to 85;
+if .z<datepart(start{i})-7 le samplingdate le datepart(slut{i})+7 then proveiinterval=1;
+drop i;
+end;
+run; 
+
+proc freq data=ddimerudenakut; tables proveiinterval; run; 
+
+data perm.ddimerudenakut_flere; keep cpr samplingdate samplingtime sampletimedate ddimer; 
+set ddimerudenakut;
+if proveiinterval=0 then output; 
+run;
+proc sort data=perm.ddimerudenakut_flere; by cpr sampletimedate; run;
+
+data almedicin; rename cpr_encrypted=cpr;
+set in03749.lms_epikur;
+where EKSD>'01JUN2019'd AND (SUBSTR(ATC,1,3) in ('J01') or SUBSTR(ATC,1,4) in ('H02A'));
+run; 
+proc sort data=almedicin; by cpr; run;
+
+data medicinpop; 
+merge perm.kolpop (in=pop) almedicin;
+by cpr;
+if pop;
+run; 
+
+data ABpop;
+set medicinpop;
+if SUBSTR(ATC,1,3) in ('J01') then AB=1; else AB=0;
+if SUBSTR(ATC,1,7) in ('J01FA10') then AB=0;
+run; 
+data ABpop2; drop doso indo vnr volapk apk; 
+set ABpop; 
+where AB=1;
+ABstart=EKSD-7;
+ABslut=EKSD+7;
+run; 
+
+data akutab;
+set ABpop2;
+by cpr;
+if first.cpr then cpr_count=0;
+cpr_count+1; run; 
+
+proc freq data=akutab; tables cpr_count; run; /* der er maks 63 gentagelser af cpr */
+
+%macro abvandret0 (ind,ud,antalfra,antaltil,datafra);
+%DO i = &antalfra %TO &antaltil;
+%let a=&ind&i.;
+%let b=&ud&i.;
+data ab_&a. (keep=cpr &a &b);  set &datafra;
+	if cpr_count=&i then &a=&ind;
+	if cpr_count=&i then &b=&ud;
+	if cpr_count=&i then output; 
+run;
+
+proc sort data=ab_&a.;
+	by cpr;
+run;  
+%end;
+
+%DO j = &antalfra %TO &antaltil;
+
+data &datafra._vandret;
+merge ab_&ind.&antalfra - ab_&ind&&j.;
+	by cpr;
+run;
+%end; 
+
+%DO u = &antalfra %TO &antaltil;
+proc datasets lib=work nolist;
+delete ab_&ind&&u.; 
+quit;
+run;
+%end;
+%mend;
+%abvandret0(abstart,abslut,1,63,akutab)
+
+data abakut2;
+merge perm.ddimerudenakut_flere (in=all) akutab_vandret; 
+by cpr;
+if all;
+run; 
+
+data abakut3; keep cpr akutab samplingdate;
+set abakut2; 
+akutAB=0; 
+array start{63} abstart1-abstart63;
+array slut{63} abslut1-abslut63;
+do i = 1 to 63;
+if .z<start{i} le samplingdate le slut{i} then akutAB=1; 
+drop i;
+end;
+run; 
+
+data prednpop;
+set medicinpop;
+if SUBSTR(ATC,1,7) in ('H02AB06','H02AB07') then output;
+run; 
+
+proc sort data=prednpop; by vnr; run; 
+proc sort data=in03749.lms_laegemiddeloplysninger out=vnr; by vnr; run;
+
+data prednpop2 (keep=cpr eksd atc pname packtext packsize streng strnum strunit prednekv);
+merge prednpop (in=a) vnr; 
+prednekv=strnum; 
+by vnr; if a; run;
+
+data prednpop2; 
+set prednpop2;
+predn=1;
+if prednekv ge 25 then output;
+run; 
+
+data prednpop3; drop pname packtext packsize streng strnum strunit prednekv; 
+set prednpop2; 
+where predn=1;
+prednstart=EKSD-7;
+prednslut=EKSD+7;
+run; 
+
+proc sort data=prednpop3; by cpr; run;
+
+data akutpredn;
+set prednpop3;
+by cpr;
+if first.cpr then cpr_count=0;
+cpr_count+1; run; 
+
+proc freq data=akutpredn; tables cpr_count; run; 
+
+%abvandret0(prednstart,prednslut,1,26,akutpredn)
+
+data prednakut2;
+merge perm.ddimerudenakut_flere (in=all) akutpredn_vandret; 
+by cpr;
+if all;
+run; 
+
+data prednakut3; keep cpr akutpredn samplingdate;
+set prednakut2; 
+akutPREDN=0; 
+array start{26} prednstart1-prednstart26;
+array slut{26} prednslut1-prednslut26;
+do i = 1 to 26;
+if .z<start{i} le samplingdate le slut{i} then akutpredn=1;  
+drop i;
+end;
+run; 
+
+data perm.ddimerudenakut_flere2;
+merge perm.ddimerudenakut_flere (in=pop) abakut3 prednakut3;
+by cpr samplingdate;
+if pop; 
+run; 
+
+data test6;
+set perm.ddimerudenakut_flere2;
+if akutab=1 then output;
+run; 
+proc freq data=perm.ddimerudenakut_flere2; tables akutpredn; run; 
+
+data ddimerudenakutmed;
+set perm.ddimerudenakut_flere2;
+if (akutpredn=1) or (akutab=1) then delete; 
+run; 
+
+proc sort data=ddimerudenakutmed; by cpr sampletimedate;
+run; 
+
+data perm.ddimerudenakut;
+set ddimerudenakutmed;
+by cpr sampletimedate;
+if first.cpr then output;
+run; 
+
+proc means data=perm.ddimerudenakut n q1 median q3 mean std min max p95; var ddimer; run;
+
+proc sort data=perm.ddimerudenakut; by cpr sampletimedate; run;
+
+data crp; rename samplingtime=crpsamptime;
+set perm.biokemi; 
+if ANALYSISCODE='NPU19748' then output;
+run; 
+
+data crp; set crp; CRP=VALUE+0; keep cpr samplingdate crpsamptime crp; run;
+
+proc sort data=crp; by cpr samplingdate crpsamptime; run; 
+
+data ddimerudenakut2;
+merge perm.ddimerudenakut (in=pop) crp;
+by cpr samplingdate;
+if pop; 
+run; 
+
+proc sort data=ddimerudenakut2 out=test10 nodupkey; by cpr; run;
+
+proc sort data=ddimerudenakut2 nodupkeys; by cpr crp ddimer; run;
+
+proc sql;
+create table ddimerudenakuttael as 
+select *, count(cpr) as cprcount
+from ddimerudenakut2
+group by cpr;
+quit;
+
+data test2;
+set ddimerudenakuttael;
+if cprcount ge 2 then output;
+run;
+
+data ddimerudenakut3;
+set ddimerudenakuttael;
+if ((cprcount ge 2) AND (samplingtime ne crpsamptime) AND crpsamptime ne '.') then delete;
+run;  
+
+proc sort data=ddimerudenakut3 nodupkeys ; by cpr; run;
+
+data perm.ddimercrppop;  set ddimerudenakut3; by cpr; if first.cpr; keep cpr sampletimedate ddimer crp; run;
+
+
+data ddimerpop; keep cpr sampletimedate;
+set perm.ddimercrppop; 
+run;
+
+proc sort data=ddimerpop; by cpr; run;
+
+data lpr2adm; set in03749.ds_lpr_t_adm; rename v_cpr_encrypted=cpr; run; 
+
+proc sort data=lpr2adm; by cpr; run; 
+
+data ddimerpoplpr; keep cpr sampletimedate d_inddto d_uddto v_indminut v_indtime v_udtime k_recnum c_spec c_sgh c_afd c_adiag; rename k_recnum=v_recnum; merge ddimerpop (in=pop) lpr2adm; by cpr; if pop; run;
+
+data ddimerpoplpr; set ddimerpoplpr; 
+indtimedate=dhms(d_inddto,v_indtime,v_indminut,0);
+run;
+
+proc sort data=ddimerpoplpr; by v_recnum; run;
+
+data diag;
+set in03749.ds_lpr_t_diag; 
+if c_diagtype='A' then output; 
+if c_diagtype='B' then output; 
+if c_diagtype='+' then output; 
+run;
+
+proc sort data=diag; by v_recnum; run;
+
+data perm.ddimerlpr2hist; merge ddimerpoplpr(in=pop) diag; by v_recnum; if pop; run;
+data perm.ddimerlpr2hist;
+set perm.ddimerlpr2hist;
+indtimedate=dhms(d_inddto,v_indtime,v_indminut,0);
+run; 
+
+data perm.ddimerlpr2hist; drop c_tildiag c_diagmod; set perm.ddimerlpr2hist; lpr2kode=c_diag; run; 
+
+proc sort data=perm.ddimerlpr2hist; by cpr; run;
+
+data lpr3adm; rename personnummer_encrypted=cpr; set in03749.lpr3_sb_kontakt; run; 
+
+proc sort data=lpr3adm; by cpr; run; 
+
+data ddimerpoplpr3; keep cpr sampletimedate starttidspunkt sluttidspunkt kontakt_id fejl fejl_flb fejl_trns ansvarlig_enhed hovedspeciale aktionsdiagnose; merge ddimerpop (in=pop) lpr3adm; by cpr; if pop; run;
+
+proc sort data=ddimerpoplpr3; by kontakt_id; run;
+
+proc freq data=in03749.lpr3_sb_diagnose; tables art; run;
+
+data diaglpr3_; keep art diagnose_id fejl fejl_kontakt kode kontakt_id senereafkraeftet;
+set in03749.lpr3_sb_diagnose; 
+run;
+
+proc sort data=diaglpr3_; by kontakt_id; run;
+
+data ddimerlpr3; merge ddimerpoplpr3(in=pop) diaglpr3_; by kontakt_id; if pop; run;
+
+data perm.ddimerlpr3; drop fejl fejl_flb fejl_trns fejl_kontakt senereafkraeftet; rename kode=lpr3kode art=lpr3type; set ddimerlpr3;
+if senereafkraeftet=1 then delete;
+if fejl_kontakt=1 then delete;
+if fejl=1 then delete;
+if fejl_flb=1 then delete;
+if fejl_trns=1 then delete;
+run; 
+
+data perm.ddimerlpr3hist;
+set perm.ddimerlpr3;
+if datepart(STARTTIDSPUNKT) ge datepart(SAMPLETIMEDATE) then delete;
+run; 
+
+proc sort data=perm.ddimerlpr3hist; by cpr; run;
+
+data lpr3historik; rename lpr3kode=diag; drop diagnose_id;
+set perm.ddimerlpr3hist;
+run;
+
+data lpr2historik; keep cpr c_adiag c_spec c_sgh c_afd c_diag sampletimedate d_inddto d_uddto indtimedate; rename c_diag=diag indtimedate=starttidspunkt; label c_diag=diag;
+set perm.ddimerlpr2hist;
+run;
+
+data perm.ddimerlprhist;
+set lpr3historik lpr2historik; 
+label diag=diag;
+run;
+
+data maligneks;
+set perm.ddimerlprhist;
+if 'C00'<=substr(AKTIONSDIAGNOSE,2,3)<='C26' OR 'C30'<=substr(AKTIONSDIAGNOSE,2,3)<='C34' OR 'C37'<=substr(AKTIONSDIAGNOSE,2,3)<='C41' OR 'C45'<=substr(AKTIONSDIAGNOSE,2,3)<='C58' OR 'C60'<=substr(AKTIONSDIAGNOSE,2,3)<='C76' OR 'C81'<=substr(AKTIONSDIAGNOSE,2,3)<='C85' OR 'C90'<=substr(AKTIONSDIAGNOSE,2,3)<='C97' OR 'C77'<=substr(AKTIONSDIAGNOSE,2,3)<='C80' OR substr(AKTIONSDIAGNOSE,2,3) in ('C43', 'C88') then Cancer=1;
+if 'C00'<=substr(AKTIONSDIAGNOSE,2,3)<='C26' OR 'C30'<=substr(AKTIONSDIAGNOSE,2,3)<='C34' OR 'C37'<=substr(AKTIONSDIAGNOSE,2,3)<='C41' OR 'C45'<=substr(AKTIONSDIAGNOSE,2,3)<='C58' OR 'C60'<=substr(AKTIONSDIAGNOSE,2,3)<='C76' OR 'C81'<=substr(AKTIONSDIAGNOSE,2,3)<='C85' OR 'C90'<=substr(AKTIONSDIAGNOSE,2,3)<='C97' OR 'C77'<=substr(AKTIONSDIAGNOSE,2,3)<='C80' OR substr(AKTIONSDIAGNOSE,2,3) in ('C43', 'C88') then output;
+run;
+
+
+data maligneks; keep cpr cancereks; cancereks=1;
+set maligneks;
+if datepart(sampletimedate)-730 gt datepart(sluttidspunkt) then delete; run;
+
+proc sort data=maligneks nodupkey; by cpr; run;
+
+data aneurismeeks; keep cpr aneurisme;
+set perm.ddimerlprhist;
+if substr(diag,2,3) in ('I71') then aneurisme=1;
+if substr(diag,2,3) in ('I71') then output;
+run;
+proc sort data=aneurismeeks nodupkey; by cpr; run;
+
+data levereks; keep cpr levereks;
+set perm.ddimerlprhist;
+if substr(diag,2,3) in ('K73', 'K74') OR substr(diag,2,4) in ('I850', 'I859', 'I864', 'I982', 'K702', 'K703', 'K704', 'K711', 'K721', 'K729', 'K765', 'K766', 'K767') then levereks=1;
+if substr(diag,2,3) in ('K73', 'K74') OR substr(diag,2,4) in ('I850', 'I859', 'I864', 'I982', 'K702', 'K703', 'K704', 'K711' 'K721', 'K729', 'K765', 'K766', 'K767') then output;
+run;
+proc sort data=levereks nodupkey; by cpr; run;
+
+data vteeks; keep cpr vteeks;
+set perm.ddimerlprhist;
+if (substr(AKTIONSDIAGNOSE,2,3)='I80' or substr(AKTIONSDIAGNOSE,2,5)='I809B' or substr(AKTIONSDIAGNOSE,2,4) in ('I260', 'I269'))  AND (datepart(sampletimedate)-90 < datepart(sluttidspunkt)) then VTEeks=1;
+if (substr(AKTIONSDIAGNOSE,2,3)='I80' or substr(AKTIONSDIAGNOSE,2,5)='I809B' or substr(AKTIONSDIAGNOSE,2,4) in ('I260', 'I269'))  AND (datepart(sampletimedate)-90 < datepart(sluttidspunkt)) then output;
+run;
+proc sort data=vteeks nodupkey; by cpr; run;
+
+data blodningeks; keep cpr blodningeks;
+set perm.ddimerlprhist;
+if (substr(AKTIONSDIAGNOSE,2,3)='R04' or substr(AKTIONSDIAGNOSE,2,4) in ('K920', 'K921', 'K922', 'N930', 'N938', 'N939') or substr(AKTIONSDIAGNOSE,2,5)='R319A')  AND (datepart(sampletimedate)-90 < datepart(sluttidspunkt)) then blodningeks=1;
+if (substr(AKTIONSDIAGNOSE,2,3)='R04' or substr(AKTIONSDIAGNOSE,2,4) in ('K920', 'K921', 'K922', 'N930', 'N938', 'N939') or substr(AKTIONSDIAGNOSE,2,5)='R319A')  AND (datepart(sampletimedate)-90 < datepart(sluttidspunkt)) then output;
+run;
+proc sort data=blodningeks nodupkey; by cpr; run;
+
+data operationer; rename starttidspunkt=opstart sluttidspunkt=opslut;
+set in03749.lpr3_sb_procedurer;
+if substr(KODE,1,1)='K' then output;
+run;
+proc sort data=operationer; by kontakt_id; run; 
+proc sort data=perm.ddimerlprhist nodupkey out=ddimeroperationer; by kontakt_id; run; 
+data ddimeroperationer2; merge ddimeroperationer (in=a) operationer; by kontakt_id;
+if a; run;
+data ddimeroperationer2; set ddimeroperationer2; if missing(kontakt_id) then delete; run;  
+data opeks; opeks=1; 
+set ddimeroperationer2;
+if datepart(sampletimedate)-14 gt datepart(opstart) then delete;
+if datepart(sampletimedate) le datepart(opstart) then delete; run;
+
+data opeks; keep cpr opeks; set opeks;
+if KODE='KTGA30A' or KODE='KTNH10' then output; 
+run;
+proc sort data=opeks; by cpr; run;
+
+data perm.ddimercrppop;
+merge perm.ddimercrppop maligneks aneurismeeks levereks vteeks blodningeks opeks;
+by cpr; 
+run; 
+
+data perm.dimerrygestatus;
+	set in03749.lpr3_sb_procedurer;
+	where substr(KODE, 1, 8) in ("ZZP01A1A", "ZZP01A1B"); /* Procedurekoder for rygestatus */
+	length rygestatus $ 40;
+	if KODE = "ZZP01A1A" then rygestatus = "aktiv ryger";
+	if KODE = "ZZP01A1B" then rygestatus = "ikke ryger";
+	if KODE = "ZZP01A1B1" then rygestatus = "rygestopper";
+	if KODE = "ZZP01A1B2" then rygestatus = "tidligere ryger";
+	if KODE = "ZZP01A1B3" then rygestatus = "aldrig ryger";
+	keep kontakt_id KODE rygestatus STARTTIDSPUNKT;
+run;
+
+proc sort data=perm.dimerrygestatus; by kontakt_id; run;
+
+proc sort data=lpr3adm; by cpr; run;
+
+proc sort data=perm.ddimercrppop; by cpr; run;
+
+data perm.ddimerpop_kontid; keep cpr kontakt_id sampletimedate;
+merge perm.ddimercrppop (in=a) lpr3adm; by cpr; if a; run;
+
+proc sort data=perm.ddimerpop_kontid; by kontakt_id; run;
+
+data perm.dimerrygestatus2; merge perm.ddimerpop_kontid (in=a) perm.dimerrygestatus; by kontakt_id; if a; run;
+
+proc sort data=perm.dimerrygestatus2; by cpr; run;
+
+data rygestatus; 
+set perm.dimerrygestatus2;
+by cpr;
+if (.z<datepart(starttidspunkt)-395 le datepart(sampletimedate) le  datepart(starttidspunkt)+1) then output; 
+run;
+proc sort data=rygestatus;
+by cpr starttidspunkt; run; 
+data perm.rygestatuskol; keep cpr rygestatus;
+set rygestatus;
+by cpr;
+if last.cpr;
+run;
+
+Data fev1L;
+set in03749.lpr3_sb_procedurer;
+if KODE='ZZ4130A' then output;
+run;
+proc sort data=fev1L; by procedurer_id; run; 
+
+data tillaeg;
+set in03749.lpr3_sb_procedurer_tillaeg;
+if substr(TILLAEGSKODE, 1, 3) = "VPK";
+run; 
+proc sort data=tillaeg; by procedurer_id; run;
+
+data perm.fev1Ltot; keep kontakt_id forloebelement_id starttidspunkt fev1L; rename starttidspunkt=fev1tidspunkt; label starttidspunkt=fev1tidspunkt;
+merge fev1L (in=a) tillaeg;
+by procedurer_id;
+if a;
+FEV1L2	= transtrn(tillaegskode,"VPK",TRIMN(''));
+FEV1L2	= translate(FEV1L2,'.','K');
+FEV1L=FEV1L2+0;
+if fejl=1 then delete; 
+run;
+
+proc sort data=perm.fev1ltot; by kontakt_id; run;
+
+data ddimerkontforloeb; keep cpr forloebelement_id kontakt_id sampletimedate; 
+merge perm.ddimercrppop (in=pop) lpr3adm; 
+by cpr; 
+if pop; 
+run;
+
+data fev1kont;
+set perm.fev1Ltot;
+if missing(kontakt_id) then delete;
+run; 
+
+data fev1forl;
+set perm.fev1Ltot;
+if missing(forloebelement_id) then delete;
+run; 
+
+proc sort data=ddimerkontforloeb; by kontakt_id; run; 
+proc sort data=fev1kont; by kontakt_id; run; 
+data fev1tot1; 
+merge ddimerkontforloeb (in=pop) fev1kont; 
+by kontakt_id;
+if pop; 
+run;
+
+proc sort data=ddimerkontforloeb; by forloebelement_id; run; 
+proc sort data=fev1forl; by forloebelement_id; run; 
+
+data fev1tot2; drop kode; 
+merge ddimerkontforloeb (in=pop) fev1forl; 
+by forloebelement_id;
+if pop; 
+run;
+proc means data=fev1tot2; var fev1l; run;
+
+data fev1tot_; drop kode kontakt_id forloebelement_id; 
+set fev1tot1 fev1tot2; 
+if missing(fev1l) then delete;
+run; 
+
+proc sort data=fev1tot_; by cpr fev1tidspunkt fev1l; run; 
+
+data perm.ddimerfev1ldup;
+set fev1tot_;
+run;
+
+proc sort data=perm.ddimerfev1ldup; by cpr; run;
+
+data fev1l2;
+set perm.ddimerfev1ldup;
+where (.z<datepart(fev1tidspunkt)-395 le datepart(sampletimedate) le  datepart(fev1tidspunkt)+7) and not missing(fev1L);
+provedag=datepart(sampletimedate);
+fev1dag=datepart(fev1tidspunkt);
+dist=fev1dag-provedag;
+run;
+
+proc sort data=fev1l2; by cpr dist; run;
+data perm.fev1l; drop dist provedag;
+set fev1l2;
+by cpr;
+if first.cpr;
+run;
+
+Data hojde;
+set in03749.lpr3_sb_procedurer;
+if KODE='ZZ0241' then output;  /*SKS-kode for højde i cm er zz0241*/
+run;
+proc sort data=hojde; by procedurer_id; run; 
+
+data hojdetillaeg;
+set in03749.lpr3_sb_procedurer_tillaeg;
+run; 
+
+proc sort data=hojdetillaeg; by procedurer_id; run;
+
+data perm.hojde; keep kontakt_id forloebelement_id starttidspunkt hojde; rename starttidspunkt=hojdetidspunkt; label starttidspunkt=hojdetidspunkt;
+merge hojde (in=a) hojdetillaeg;
+by procedurer_id;
+if a;
+if substr(tillaegskode,1,3)="VPH" then hojde2=transtrn(tillaegskode,"VPH",TRIMN(''));
+if substr(tillaegskode,1,3)="VPK" then hojde2=transtrn(tillaegskode,"VPK",TRIMN(''));
+if substr(tillaegskode,1,3)="VPK" then hojde2=translate(hojde2,'.','K');
+hojde=hojde2+0;
+if fejl=1 then delete; 
+run;
+
+proc sort data=perm.hojde; by kontakt_id; run;
+
+data ddimerkontforloeb; keep cpr forloebelement_id kontakt_id sampletimedate; 
+merge perm.ddimercrppop (in=pop) lpr3adm; 
+by cpr; 
+if pop; 
+run;
+
+data perm.ddimerkontforloeb;
+set ddimerkontforloeb;
+run;
+
+proc sort data=perm.ddimerkontforloeb; by kontakt_id; run;
+data fev1calc; 
+merge perm.ddimerkontforloeb (in=a) perm.hojde (in=b);
+by kontakt_id;
+if a; if b;
+rename hojde=height; label hojde=height; 
+if missing(hojde) then delete;
+run; 
+
+data fev1calc;
+set fev1calc;
+where not missing(height);
+provedag=datepart(sampletimedate);
+hojdedag=datepart(hojdetidspunkt);
+dist=hojdedag-provedag;
+run;
+
+proc sort data=fev1calc; by cpr dist; run;
+data fev1calc2; drop dist provedag hojdedag hojdetidspunkt;
+set fev1calc;
+by cpr;
+if first.cpr;
+run;
+
+data perm.fev1calc; drop crp;
+merge perm.ddimercrppop (in=pop) fev1calc2; 
+by cpr; 
+if pop; 
+run; 
+
+data etn; rename v_pnr_encrypted=cpr;
+set in03749.cpr3_indvandrer_efterkommer;
+run; 
+
+
+proc sort data=etn; by cpr; run; 
+data etnkol; 
+merge perm.ddimercrppop (in=pop) etn; 
+by cpr;
+if pop; 
+run; 
+
+proc freq data=etnkol;
+tables oprindelses_land_tekst; 
+run; 
+
+data perm.etnkol; keep cpr oprindelses_land_tekst ethnicity; 
+set etnkol;
+if oprindelses_land_tekst='Tyskland' or oprindelses_land_tekst='Norge' or oprindelses_land_tekst='Island' or oprindelses_land_tekst='Irland' or oprindelses_land_tekst='Sverige' or oprindelses_land_tekst='USA' or oprindelses_land_tekst='Finland' or oprindelses_land_tekst='Jugoslavien' or oprindelses_land_tekst='Portugal' or oprindelses_land_tekst='Nordmakedonien' then ethnicity=1; /* caucasere */
+if oprindelses_land_tekst='Eritrea' or oprindelses_land_tekst='Ghana' then ethnicity=2; /* african american */ 
+if oprindelses_land_tekst='Libanon' or oprindelses_land_tekst='Pakistan' or oprindelses_land_tekst='Afghanistan' or oprindelses_land_tekst='Tyrkiet' or oprindelses_land_tekst='Irak' or oprindelses_land_tekst='Udlandet' then ethnicity=5; /* other / mixed */ 
+if missing(oprindelses_land_tekst) then ethnicity=1;
+run; 
+ 
+proc freq data=perm.etnkol; tables ethnicity; run; 
+
+data cprfev; rename v_pnr_encrypted=cpr; 
+set in03749.cpr3_t_person;
+if c_kon='M' then Sex=1;
+if c_kon='K' then Sex=2; 
+run; 
+proc sort data=cprfev; by cpr; run; 
+
+data perm.cprfev; 
+merge perm.ddimercrppop (in=pop) cprfev; 
+by cpr;
+if pop; 
+run; 
+
+data perm.fev1calc2; drop crp ddimer cancereks aneurisme levereks vteeks blodningeks opeks forloebelement_id kontakt_id c_kon; rename fev1l=fev1; 
+merge perm.fev1calc (in=pop) perm.cprfev perm.etnkol perm.fev1l; 
+by cpr; 
+if pop; 
+age=floor((datepart(sampletimedate)-d_foddato)/365.25);
+ID=_n_;
+run; 
+
+data test;
+set perm.fev1calc2;
+if missing(fev1) then delete; run; 
+
+/* GLI macro*/
+%spiro	(data_lib=F:\XXXX\XXXX\XXXX\Data,
+				ref_lib=F:\XXXX\XXXX\XXXX\GLI_macro,
+				table_name=fev1calc2,
+				out_lib=F:\XXXX\XXXX\XXXX\Data
+		);
+
+data perm.fev1p; keep cpr sex ethnicity fev1 age height fev1_percent_predicted oprindelses_land_tekst; rename fev1_percent_predicted=fev1p; label fev1_percent_predicted=fev1p;
+merge perm.fev1calc2 perm.spiro_calculations;
+by id;
+run;
+
+Data vaegt;
+set in03749.lpr3_sb_procedurer;
+if KODE='ZZ0240' then output;  
+run;
+proc sort data=vaegt; by procedurer_id; run; 
+
+data vaegttillaeg;
+set in03749.lpr3_sb_procedurer_tillaeg;
+run; 
+proc sort data=vaegttillaeg; by procedurer_id; run;
+
+data perm.vaegt; keep kontakt_id forloebelement_id starttidspunkt vaegt; rename starttidspunkt=vaegttidspunkt; label starttidspunkt=vaegttidspunkt;
+merge vaegt (in=a) vaegttillaeg;
+by procedurer_id;
+if a;
+if substr(tillaegskode,1,3)="VPH" then vaegt2=transtrn(tillaegskode,"VPH",TRIMN(''));
+if substr(tillaegskode,1,3)="VPK" then vaegt2=transtrn(tillaegskode,"VPK",TRIMN(''));
+if substr(tillaegskode,1,3)="VPK" then vaegt2=translate(vaegt2,'.','K');
+vaegt=vaegt2+0;
+if fejl=1 then delete; 
+run;
+
+proc sort data=perm.vaegt; by kontakt_id; run;
+
+proc sort data=perm.ddimerkontforloeb; by kontakt_id; run;
+
+data perm.vaegt; 
+merge perm.ddimerkontforloeb (in=a) perm.vaegt (in=b);
+by kontakt_id;
+if a; if b;
+if missing(vaegt) then delete;
+run; 
+
+data vaegtkol;
+set perm.vaegt;
+where (.z<datepart(vaegttidspunkt)-395 le datepart(sampletimedate) le  datepart(vaegttidspunkt)+7) and not missing(vaegt);
+provedag=datepart(sampletimedate);
+vaegtdag=datepart(vaegttidspunkt);
+dist=vaegtdag-provedag;
+run;
+
+proc sort data=vaegtkol; by cpr dist; run;
+data perm.vaegtkol; drop dist provedag vaegtdag vaegttidspunkt kontakt_id forloebelement_id;
+set vaegtkol;
+by cpr;
+if first.cpr;
+run;
+
+proc sort data=perm.fev1p; by cpr; run;
+
+data perm.ddimerpopbase_alle;
+merge perm.ddimercrppop (in=a) perm.fev1p perm.vaegtkol perm.rygestatuskol ;
+by cpr; if a; run; 
+
+
+proc sort data=perm.ddimerlprhist; by cpr; run; 
+
+data histmi (keep=cpr mi mipoint);
+set perm.ddimerlprhist ;
+if substr(diag,2,3) in ('I21', 'I22') or substr(diag,2,4) in ('I22', 'I252')  then mi=1; else mi=0;
+if substr(diag,2,3) in ('I21', 'I22') or substr(diag,2,4) in ('I22', 'I252')  then mipoint=1; else mipoint=0;
+if mi=1;
+run; 
+
+data histmi;
+set histmi;
+by cpr;
+if first.cpr;
+run;
+
+data histhf (keep=cpr hf hfpoint);
+set perm.ddimerlprhist;
+if 'I425'<=substr(diag,2,4)<='I429' or substr(diag,2,4) in ('I099', 'I110', 'I130', 'I132', 'I255', 'I420', 'P290') or substr(diag,2,3) in ('I43', 'I50') then HF=1; else HF=0; 	
+if 'I425'<=substr(diag,2,4)<='I429' or substr(diag,2,4) in ('I099', 'I110', 'I130', 'I132', 'I255', 'I420', 'P290') or substr(diag,2,3) in ('I43', 'I50') then hfpoint=1; else hfpoint=0;
+if hf=1;
+run; 
+
+data histhf;
+set histhf;
+by cpr;
+if first.cpr;
+run;
+
+data histpvd (keep=cpr pvd pvdpoint);
+set perm.ddimerlprhist;
+if 'I70'<=substr(diag,2,3)<='I71' or 'I731'<=substr(diag,2,4)<='I739' or substr(diag,2,4) in ('I771', 'I790', 'I792', 'K551', 'K558', 'K559', 'Z958', 'Z959') then pvd=1; else pvd=0;
+if 'I70'<=substr(diag,2,3)<='I71' or 'I731'<=substr(diag,2,4)<='I739' or substr(diag,2,4) in ('I771', 'I790', 'I792', 'K551', 'K558', 'K559', 'Z958', 'Z959') then pvdpoint=1; else pvdpoint=0;
+if pvd=1;
+run; 
+
+data histpvd;
+set histpvd;
+by cpr;
+if first.cpr;
+run;
+
+data histstroke (keep=cpr stroke strokepoint);
+set perm.ddimerlprhist;
+if 'I60'<=substr(diag,2,3)<='I69' or substr(diag,2,3) in ('G45', 'G46') or substr(diag,2,4) in ('H340') then stroke=1; else stroke=0;
+if 'I60'<=substr(diag,2,3)<='I69' or substr(diag,2,3) in ('G45', 'G46') or substr(diag,2,4) in ('H340') then strokepoint=1; else strokepoint=0;
+if stroke=1;
+run; 
+
+data histstroke;
+set histstroke;
+by cpr;
+if first.cpr;
+run;
+
+data histdement (keep=cpr dement dementpoint);
+set perm.ddimerlprhist;
+if 'F00'<=substr(diag,2,3)<='F03' or substr(diag,2,3) in ('G30') or substr(diag,2,4) in ('F051', 'G311') then dement=1; else dement=0;
+if 'F00'<=substr(diag,2,3)<='F03' or substr(diag,2,3) in ('G30') or substr(diag,2,4) in ('F051', 'G311') then dementpoint=1; else dementpoint=0;
+if dement=1;
+run; 
+
+data histdement ;
+set histdement ;
+by cpr;
+if first.cpr;
+run;
+
+data histchrpulm (keep=cpr chrpulm chrpulmpoint);
+set perm.ddimerlprhist;
+if 'J40'<=substr(diag,2,3)<='J47' or 'J60'<=substr(diag,2,3)<='J67' or substr(diag,2,4) in ('J278', 'J279', 'J684', 'J701', 'J703') then chrpulm=1; else chrpulm=1;
+if 'J40'<=substr(diag,2,3)<='J47' or 'J60'<=substr(diag,2,3)<='J67' or substr(diag,2,4) in ('J278', 'J279', 'J684', 'J701', 'J703') then chrpulmpoint=1; else chrpulmpoint=1;
+if chrpulm=1;
+run; 
+
+data histchrpulm ;
+set histchrpulm ;
+by cpr;
+if first.cpr;
+run;
+
+data histctd (keep=cpr ctd ctdpoint);
+set perm.ddimerlprhist;
+if 'M32'<=substr(diag,2,3)<='M34' or substr(diag,2,4) in ('M315', 'M351', 'M353', 'M360') or substr(diag,2,3) in ('M05', 'M06') then ctd=1; else ctd=0;
+if 'M32'<=substr(diag,2,3)<='M34' or substr(diag,2,4) in ('M315', 'M351', 'M353', 'M360') or substr(diag,2,3) in ('M05', 'M06') then ctdpoint=1; else ctdpoint=0;
+if ctd=1;
+run; 
+
+data histctd ;
+set histctd ;
+by cpr;
+if first.cpr;
+run;
+
+data histulcer (keep=cpr ulcer ulcerpoint);
+set perm.ddimerlprhist;
+if 'K25'<=substr(diag,2,3)<='K28' then ulcer=1; else ulcer=0;
+if 'K25'<=substr(diag,2,3)<='K28' then ulcerpoint=1; else ulcerpoint=0;
+if ulcer=1;
+run; 
+
+data histulcer ;
+set histulcer ;
+by cpr;
+if first.cpr;
+run;
+
+data histlivermild (keep=cpr livermild livermildpoint);
+set perm.ddimerlprhist;
+if 'K700'<=substr(diag,2,4)<='K703' or 'K713'<=substr(diag,2,4)<='K715' or 'K762'<=substr(diag,2,4)<='K764' or substr(diag,2,3) in ('B18', 'K73', 'K74') or substr(diag,2,4) in ('K709', 'K717', 'K760', 'K768', 'K769', 'Z944') then livermild=1; else livermild=0;
+if 'K700'<=substr(diag,2,4)<='K703' or 'K713'<=substr(diag,2,4)<='K715' or 'K762'<=substr(diag,2,4)<='K764' or substr(diag,2,3) in ('B18', 'K73', 'K74') or substr(diag,2,4) in ('K709', 'K717', 'K760', 'K768', 'K769', 'Z944') then livermildpoint=1; else livermildpoint=0;
+if livermild=1;
+run; 
+
+data histlivermild ;
+set histlivermild ;
+by cpr;
+if first.cpr;
+run;
+
+data histdmukomp (keep=cpr dmukomp dmukomppoint);
+set perm.ddimerlprhist;
+if substr(diag,2,4) in ('E100', 'E101', 'E106', 'E108', 'E109', 'E110', 'E111', 'E116', 'E118', 'E119', 'E120', 'E121', 'E126', 'E128', 'E129', 'E130', 'E131', 'E136', 'E138', 'E139', 'E140', 'E141', 'E146', 'E148', 'E149') then DMukomp=1; else dmukomp=0;
+if substr(diag,2,4) in ('E100', 'E101', 'E106', 'E108', 'E109', 'E110', 'E111', 'E116', 'E118', 'E119', 'E120', 'E121', 'E126', 'E128', 'E129', 'E130', 'E131', 'E136', 'E138', 'E139', 'E140', 'E141', 'E146', 'E148', 'E149') then DMukomppoint=1; else dmukomppoint=0;
+if dmukomp=1;
+run; 
+
+data histdmukomp ;
+set histdmukomp ;
+by cpr;
+if first.cpr;
+run;
+
+data histplegi (keep=cpr plegi plegipoint);
+set perm.ddimerlprhist;
+if 'G810'<=substr(diag,2,4)<='G834' or substr(diag,2,4) in ('G041', 'G114', 'G801', 'G802', 'G839') then plegi=1; else plegi=0;
+if 'G810'<=substr(diag,2,4)<='G834' or substr(diag,2,4) in ('G041', 'G114', 'G801', 'G802', 'G839') then plegipoint=2; else plegipoint=0;
+if plegi=1;
+run; 
+
+data histplegi ;
+set histplegi ;
+by cpr;
+if first.cpr;
+run;
+
+data histrenal (keep=cpr renal renalpoint);
+set perm.ddimerlprhist;
+if 'N032'<=substr(diag,2,4)<='N037' or 'N052'<=substr(diag,2,4)<='N057' or 'N18'<=substr(diag,2,3)<='N19' or 'Z490'<=substr(diag,2,4)<='Z492' or substr(diag,2,4) in ('I120', 'I131', 'N250', 'Z940', 'Z992') then renal=1; else renal=0;
+if 'N032'<=substr(diag,2,4)<='N037' or 'N052'<=substr(diag,2,4)<='N057' or 'N18'<=substr(diag,2,3)<='N19' or 'Z490'<=substr(diag,2,4)<='Z492' or substr(diag,2,4) in ('I120', 'I131', 'N250', 'Z940', 'Z992') then renalpoint=1; else renalpoint=0;
+if renal=1;
+run; 
+
+data histrenal ;
+set histrenal ;
+by cpr;
+if first.cpr;
+run;
+
+data histdmkomp (keep=cpr dmkomp dmkomppoint);
+set perm.ddimerlprhist;
+if 'E102'<=substr(diag,2,4)<='E105' or 'E112'<=substr(diag,2,4)<='E115' or 'E122'<=substr(diag,2,4)<='E125' or 'E132'<=substr(diag,2,4)<='E135' or 'E142'<=substr(diag,2,4)<='E145' or substr(diag,2,4) in ('E107', 'E117','E127', 'E137', 'E147') then DMkomp=1;
+if 'E102'<=substr(diag,2,4)<='E105' or 'E112'<=substr(diag,2,4)<='E115' or 'E122'<=substr(diag,2,4)<='E125' or 'E132'<=substr(diag,2,4)<='E135' or 'E142'<=substr(diag,2,4)<='E145' or substr(diag,2,4) in ('E107', 'E117','E127', 'E137', 'E147') then DMkomppoint=2;
+if dmkomp=1;
+run; 
+
+data histdmkomp ;
+set histdmkomp ;
+by cpr;
+if first.cpr;
+run;
+
+data histmalign (keep=cpr malign malignpoint);
+set perm.ddimerlprhist;
+if 'C00'<=substr(diag,2,3)<='C26' OR 'C30'<=substr(diag,2,3)<='C34' OR 'C37'<=substr(diag,2,3)<='C41' OR 'C45'<=substr(diag,2,3)<='C58' OR 'C60'<=substr(diag,2,3)<='C76' OR 'C81'<=substr(diag,2,3)<='C85' OR 'C90'<=substr(diag,2,3)<='C97' OR substr(diag,2,3) in ('C43', 'C88') then malign=1; else malign=0;
+if 'C00'<=substr(diag,2,3)<='C26' OR 'C30'<=substr(diag,2,3)<='C34' OR 'C37'<=substr(diag,2,3)<='C41' OR 'C45'<=substr(diag,2,3)<='C58' OR 'C60'<=substr(diag,2,3)<='C76' OR 'C81'<=substr(diag,2,3)<='C85' OR 'C90'<=substr(diag,2,3)<='C97' OR substr(diag,2,3) in ('C43', 'C88') then malignpoint=2; else malignpoint=2;
+if malign=1;
+run; 
+
+data histmalign ;
+set histmalign ;
+by cpr;
+if first.cpr;
+run;
+
+data histlivermodsev (keep=cpr livermodsev livermodsevpoint);
+set perm.ddimerlprhist;
+if 'K765'<=substr(diag,2,4)<='K767' or substr(diag,2,4) in ('I850', 'I859', 'I864', 'I982', 'K704', 'K711', 'K721', 'K729') then livermodsev=1; else livermodsev=0;
+if 'K765'<=substr(diag,2,4)<='K767' or substr(diag,2,4) in ('I850', 'I859', 'I864', 'I982', 'K704', 'K711', 'K721', 'K729') then livermodsevpoint=3; else livermodsevpoint=0;
+if livermodsev=1;
+run; 
+data histlivermodsev ;
+set histlivermodsev ;
+by cpr;
+if first.cpr;
+run;
+
+data histtumormet (keep=cpr tumormet tumormetpoint);
+set perm.ddimerlprhist;
+ if 'C77'<=substr(diag,2,3)<='C80' then tumormet=1; else tumormet=0;
+ if 'C77'<=substr(diag,2,3)<='C80' then tumormetpoint=6; else tumormetpoint=0;
+ if tumormet=1;
+run; 
+
+data histtumormet ;
+set histtumormet ;
+by cpr;
+if first.cpr;
+run;
+
+data histaids (keep=cpr aids aidspoint);
+set perm.ddimerlprhist;
+if 'B20'<=substr(diag,2,3)<='B22' or substr(diag,2,3) in ('B24') then aids=1; else aids=0;
+if 'B20'<=substr(diag,2,3)<='B22' or substr(diag,2,3) in ('B24') then aidspoint=6; else aidspoint=0;
+if aids=1;
+run; 
+
+data histaids ;
+set histaids ;
+by cpr;
+if first.cpr;
+run;
+
+data histafli (keep=cpr afli);
+set perm.ddimerlprhist ;
+if substr(diag,2,3) in ('I48') then afli=1; else afli=0;
+if afli=1;
+run; 
+
+data histafli;
+set histafli;
+by cpr;
+if first.cpr;
+run;
+
+data ddimerpopbasediag; merge perm.ddimerpopbase_alle (in=pop) histmi histhf histpvd histstroke histdement histchrpulm histctd histulcer histlivermild histdmukomp histplegi histrenal histdmkomp histmalign histlivermodsev histtumormet histaids histafli;
+by cpr;
+if pop;
+if livermild=1 or livermodsev=1 then liver=1;
+liverpoint=livermildpoint;
+if livermodsev=1 then liverpoint=livermodsevpoint;
+if (liver=1 and livermodsev ne 1) then liverpoint=livermildpoint; 
+if dmukomp=1 or dmkomp=1 then dm=1;
+if dmkomp=1 then dmpoint=dmkomppoint;
+if (dm=1 and dmkomp ne 1) then dmpoint=dmukomppoint; 
+if malign=1 or tumormet=1 then maligntot=1; 
+run; 
+
+proc stdize data=ddimerpopbasediag out=perm.ddimerpopbasediag
+	reponly missing=0;
+	var cancereks aneurisme levereks vteeks blodningeks opeks mi hf pvd stroke dement chrpulm ctd ulcer livermild dmukomp plegi renal dmkomp malign livermodsev tumormet  aids liver dm mipoint hfpoint pvdpoint strokepoint dementpoint chrpulmpoint ctdpoint ulcerpoint plegipoint renalpoint malignpoint tumormetpoint aidspoint liverpoint livermodsevpoint dmpoint dmkomppoint dmukomppoint afli maligntot;
+run;
+
+data almedicin; rename cpr_encrypted=cpr;
+set in03749.lms_epikur;
+where EKSD>'01JUN2019'd AND (SUBSTR(ATC,1,3) in ('R03') or SUBSTR(ATC,1,4) in ('B01A', 'H02A'));
+run; 
+proc sort data=almedicin; by cpr; run;
+
+data perm.almedicin;
+merge perm.ddimerpopbase_alle (in=pop) almedicin; 
+by cpr;  if pop;
+run;
+
+data icsrecept; set perm.almedicin; 
+where SUBSTR(ATC,1,3) = 'R03'; 
+run;
+
+proc sort data=icsrecept; by cpr; run;
+
+data icsrecept; ics=1; length cpr $50.;
+set icsrecept;
+where datepart(sampletimedate) > EKSD > (datepart(sampletimedate)- 182);
+run;
+
+proc sort data=icsrecept; by VNR; run;
+
+proc sort data=in03749.LMS_LAEGEMIDDELOPLYSNINGER out=lms; by VNR; run;
+
+data ics; merge icsrecept(in=a) lms; by VNR; if a; keep cpr ATC VOLAPK APK VOLUME DOSF_LT STRENG;
+run;
+
+data icsmono; set ics;
+where SUBSTR(ATC,1,5) = 'R03BA';
+if ATC = 'R03BA01' and SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2; DDD=800; end;
+if ATC = 'R03BA01' and SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=1; DDD=800; end;			
+if ATC = 'R03BA02' and SUBSTR(DOSF_LT,1,12) = 'inhalationsv' then do faktor=1; DDD=1500; end;		
+if ATC = 'R03BA02' and SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=1; DDD=800; end;			
+if ATC = 'R03BA02' and SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=1; DDD=800; end;			
+if ATC = 'R03BA05' and SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2; DDD=600; end;			
+if ATC = 'R03BA05' and SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=2; DDD=600; end;			
+if ATC = 'R03BA07' and SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=1; DDD=400; end; 		
+if ATC = 'R03BA08' and SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2.5; DDD=160; end;	
+dosis=VOLAPK*DDD;
+run;
+
+data icskomb; set ics;
+where SUBSTR(ATC,1,5) = 'R03AK';
+streng		= translate(streng,'+','/');
+streng		= translate(streng,'.',',');
+styrkerest1	= scan(streng,1,"+");
+styrkerest2	= scan(streng,2,"+");
+styrke1		= scan(styrkerest1,1," ");
+styrke2 	= scan(styrkerest2,1," ");
+styrke		= max(styrke1, styrke2);
+run;
+
+data icskomb; set icskomb;
+if ATC = 'R03AK06' AND SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2; DDD=4; end;			
+if ATC = 'R03AK06' AND SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=2; DDD=2; end;		
+if ATC = 'R03AK07' AND (styrke = 80 or styrke = 160) then do faktor=1; DDD=4;end;					
+if ATC = 'R03AK07' AND styrke = 320 then do faktor=1; DDD=2; end;								
+if ATC = 'R03AK08' AND SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2; DDD=4; end;	
+if ATC = 'R03AK08' AND SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=1; DDD=4; end;			
+if ATC = 'R03AK10' then do faktor=10; DDD=1; end;													
+if ATC = 'R03AK11' AND (styrke = 50 or styrke = 125) then do faktor=2; DDD=4; end;					
+if ATC = 'R03AK11' AND styrke = 250 then do faktor=2; DDD=2; end;									
+if ATC = 'R03AK14' then do faktor=1; DDD=1; end;													
+dosis=VOLAPK*DDD*styrke;
+run;
+
+
+data icstrip; set ics;
+where SUBSTR(ATC,1,7) in ('R03AL08', 'R03AL09', 'R03AL11', 'R03AL12');
+streng		= translate(streng,'+','/');
+streng		= translate(streng,'.',',');
+styrkerest1	= scan(streng,1,"+");
+styrkerest2	= scan(streng,2,"+");
+styrkerest3	= scan(streng,3,"+");
+styrke1		= scan(styrkerest1,1," ");
+styrke2 	= scan(styrkerest2,1," ");
+styrke3 	= scan(styrkerest3,1," ");
+styrke		= max(styrke1, styrke2, styrke3);
+run;
+
+data icstrip; set icstrip;
+if ATC = 'R03AL08' then do faktor=10; DDD=1; end;											
+if ATC = 'R03AL09' AND SUBSTR(DOSF_LT,1,12) = 'inhalationss' then do faktor=2; DDD=4;  end;	
+if ATC = 'R03AL09' AND SUBSTR(DOSF_LT,1,12) = 'inhalationsp' then do faktor=1; DDD=4;  end;		
+if ATC = 'R03AL11' then do faktor=1; DDD=4; end;												
+if ATC = 'R03AL12' then do faktor=1; DDD=1; end;																							
+dosis=VOLAPK*DDD*styrke;
+run;
+
+data icssamlet; set icsmono icskomb icstrip; 
+dddeqv = (dosis*faktor)/182;
+run;
+
+proc sql;
+create table perm.icsdosis as
+select distinct cpr, 	sum(dddeqv) as icseqv
+from icssamlet
+group by cpr; quit;
+
+proc rank data=perm.icsdosis out=icsgruppe groups=3;
+var icseqv;
+ranks icsgrp;
+run;
+
+data perm.icsgruppe; set icsgruppe;
+if icsgrp = 2 then ics = 3;
+if icsgrp = 1 then ics = 2;
+if icsgrp = 0 then ics = 1;
+if icsgrp = '.' then ics = 0;
+drop icsgrp;
+run;
+
+
+data ocs;
+set perm.almedicin;
+where SUBSTR(ATC,1,4) in ('H02A') AND (0<datepart(sampletimedate)-EKSD<90);
+run; 
+
+proc sort data=ocs; by vnr; run; 
+proc sort data=in03749.lms_laegemiddeloplysninger out=vnr; by vnr; run;
+data ocs2 (keep=cpr atc pname packtext packsize streng strnum strunit prednekv) ;
+merge ocs (in=a) vnr; 
+if ATC='H02AB09' then prednekv=strnum/4;
+if ATC='H02AB06' then prednekv=strnum; 
+by vnr; if a; run;
+data ocs2 (keep=cpr hojpred lavpred);
+set ocs2; 
+if prednekv ge 25 then hojpred=1;
+if prednekv lt 25 then lavpred=1;
+run;
+
+
+proc sql;
+	create table perm.ocs as
+	select distinct cpr,
+					max(hojpred) as hojpred, 
+					max(lavpred) as lavpred
+	from ocs2
+	group by cpr;
+quit;
+
+data blodfortyndende;
+set perm.almedicin;
+where SUBSTR(ATC,1,4)='B01A' AND (0<datepart(sampletimedate)-EKSD<90);
+doak=0; vka=0; p2y12=0; asa=0; trctot=0; aktot=0;
+if substr(ATC,1,7) in ('B01AF01', 'B01AF02', 'B01AF03', 'B01AE07') then doak=1;
+if substr(ATC,1,7) in ('B01AA03', 'B01AA04') then vka=1;
+if substr(ATC,1,7) in ('B01AF01', 'B01AF02', 'B01AF03', 'B01AE07', 'B01AA03', 'B01AA04') then aktot=1;
+if substr(ATC,1,5) in ('B01AC') then trctot=1;
+if substr(ATC,1,7) in ('B01AC06') then asa=1;
+if substr(ATC,1,7) in ('B01AC04', 'B01AC07', 'B01AC22', 'B01AC24') then p2y12=1;
+run; 
+
+
+proc sql;
+	create table perm.blodfortyndende as
+	select distinct cpr,
+					max(doak) as doak, 
+					max(vka) as vka,
+					max(aktot) as aktot,
+					max(trctot) as trctot,
+					max(asa) as asa,
+					max(p2y12) as p2y12
+	from blodfortyndende
+	group by cpr;
+quit;
+
+data lama; keep cpr lama;
+set perm.almedicin;
+where SUBSTR(ATC,1,3)='R03' AND (0<datepart(sampletimedate)-EKSD<182);
+if substr(ATC,1,5) in ('R03AL', 'R03BB') then lama=1; else lama=0;
+run; 
+data perm.lama;
+set lama;
+by cpr;
+if first.cpr;
+run; 
+data laba; keep cpr laba;
+set perm.almedicin;
+where SUBSTR(ATC,1,3)='R03' AND (0<datepart(sampletimedate)-EKSD<182);
+if substr(ATC,1,5) in ('R03AL', 'R03AK') OR substr(ATC,1,6) in ('R03AC1') then laba=1; else laba=0;
+run; 
+data perm.laba;
+set laba;
+by cpr;
+if first.cpr;
+run; 
+
+data perm.ddimerpop_alle;
+merge perm.ddimerpopbase_alle(in=a) perm.blodfortyndende perm.ocs perm.icsgruppe perm.lama perm.laba; 
+by cpr;
+if a; 
+run;
+
+proc stdize data=perm.ddimerpop_alle out=perm.ddimerpop_alle
+	reponly missing=0;
+	var doak vka aktot trctot asa p2y12 hojpred lavpred ics lama laba;
+run;
+
+data perm.ddimerpop_alle;
+set perm.ddimerpop_alle;
+if hojpred=1 and lavpred=1 then lavpred=0; 
+run;
+
+
+data senestecpropdatering; keep cpr_opdatering;
+set in03749.opdateringsoversigt;
+if tabel='T_PERSON_STATUS' then cpr_opdatering=datepart(OpdateringsTidspunkt);
+if missing(cpr_opdatering) then delete;
+run;
+
+data cpr; rename v_pnr_encrypted=cpr d_status_hen_start=dod_dato;
+set in03749.cpr3_t_person;
+run; 
+
+proc sort data=cpr; by cpr; run; 
+
+data outcome; 
+merge perm.ddimerpop_alle (in=pop) perm.ddimerpopbasediag cpr; 
+by cpr;
+if pop;
+run; 
+
+proc sql noprint; 
+	create table perm.doddato220123 as
+	select a.*, b.* 
+	from outcome as a, senestecpropdatering as b;
+quit;
+
+proc means data=perm.doddato220123 q1 median q3; var ddimer; run; 
+
+data perm.ddimer_coxheltaar;
+set perm.doddato220123;
+inklusionsdato=datepart(sampletimedate); 
+enddate=datepart(sampletimedate)+365;
+age=floor((inklusionsdato-d_foddato)/365.25); 
+if cpr_opdatering-inklusionsdato>(365) then tte=(365); else tte=cpr_opdatering-inklusionsdato; 
+event=0;
+if (c_status=90 AND dod_dato-datepart(sampletimedate) le tte) then tte=dod_dato-datepart(sampletimedate);
+if (c_status=90 AND dod_dato-datepart(sampletimedate) le tte) then event=1; 
+if (c_status=70 or c_status=80 or c_status=60 or c_status=20 or c_status=30) AND dod_dato-datepart(sampletimedate) le tte then tte=dod_dato-inklusionsdato;
+if (c_status=70 or c_status=80 or c_status=60 or c_status=20 or c_status=30) AND dod_dato-datepart(sampletimedate) le tte then event=0;
+run; 
+
+proc freq data=perm.ddimer_coxheltaar; tables event; run;
+
+data indlpop; keep cpr sampletimedate;
+set perm.ddimercrppop; 
+run;
+
+proc sort data=indlpop; by cpr; run;
+
+data lpr3adm; rename personnummer_encrypted=cpr; set in03749.lpr3_sb_kontakt; run; 
+
+proc sort data=lpr3adm; by cpr; run; 
+
+data indlpop2; keep cpr sampletimedate starttidspunkt sluttidspunkt cpr_opdatering kontakt_id fejl fejl_flb fejl_trns ansvarlig_enhed hovedspeciale aktionsdiagnose; merge indlpop (in=pop) lpr3adm; by cpr; if pop; run;
+
+proc sort data=indlpop2;
+by cpr;
+run; 
+
+data perm.indlpophel;
+set indlpop2; 
+if intck('HOUR',STARTTIDSPUNKT,SLUTTIDSPUNKT) ge 3 then output;
+run; 
+
+data perm.indlpophel;
+set perm.indlpophel;
+enddate=datepart(sampletimedate)+365;
+daohslut=sluttidspunkt;
+if datepart(starttidspunkt)>enddate then delete;
+if datepart(starttidspunkt)<datepart(sampletimedate) then delete;
+enddatetime=dhms(enddate,23,59,0);
+if STARTTIDSPUNKT LE enddatetime LE SLUTTIDSPUNKT then daohslut=enddatetime;
+opholdstid2=intck('HOUR',STARTTIDSPUNKT,daohslut);
+run;
+
+proc sort data=perm.indlpophel nodupkey; by cpr starttidspunkt sluttidspunkt; run;
+
+proc sql;
+create table indltid as
+select distinct cpr, 	sum(opholdstid2) as indltimer
+from perm.indlpophel
+group by cpr; quit;
+
+data perm.ddimerdodindlhel;
+merge perm.ddimer_coxheltaar (in=pop) indltid;
+by cpr;
+if pop;
+run;
+
+data perm.outcomehel; drop indltimer c_kon sex cpr_opdatering ethnicity inklusionsdato enddate enddatetime;
+set perm.ddimerdodindlhel;
+if missing(enddatetime) then enddatetime=dhms(enddate,23,59,0);
+indldage=round(indltimer/24);
+if missing(indldage) then indldage=0;
+daoh=tte-indldage; 
+if c_kon='M' then male=1; else male=0;
+rygestatus2=rygestatus;
+if rygestatus="rygestopper" then rygestatus2="aktiv ryger"; 
+bmi=vaegt/((height/100)*(height/100));
+run;
+
+data perm.outcomehel2; 
+set perm.outcomehel;
+if ics ne 0 then icsbin=1; else icsbin=0;
+if datepart(sampletimedate)>'31DEC2022'd then delete;
+run; 
+
+
+data eftereks; set perm.outcomehel2; if age<50 then delete; run;  
+data eftereks; set eftereks; if cancereks= 1 then delete; run; 
+data eftereks; set eftereks; if aneurisme= 1 then delete; run;  
+data eftereks; set eftereks; if levereks = 1 then delete; run;  
+data eftereks; set eftereks; if vteeks= 1 then delete; run;  
+data eftereks; set eftereks; if opeks= 1 then delete; run;  
+data eftereks; set eftereks; if blodningeks= 1 then delete; run;  
+ 
+
+data perm.crosssect;
+set eftereks; 
+run; 
+
+proc means data=perm.crosssect median min max q1 q3 maxdec=2 nmiss n; 
+var ddimer; run; 
+
+data perm.ddimer_all; set perm.crosssect; 
+run; 
+
+proc means data=perm.ddimer_all median min max q1 q3 maxdec=2 nmiss n; 
+var ddimer; run; 
+
+data perm.ddimer_all; set perm.ddimer_all; 
+if ddimer ge 0.76 then ddimerkvar=1; 
+if ddimer lt 0.76 then ddimerkvar=0; 
+run;
+proc freq data=perm.ddimer_all; tables ddimerkvar*event /chisq; run; 
+proc freq data=perm.ddimer_all;					
+tables vteout*ddimerkvar/chisq; run; 
+
+proc corr data=perm.crosssect spearman;
+var age ddimer; run; 
+
+proc npar1way wilcoxon data=perm.crosssect; 
+class rygestatus2;
+var ddimer;
+run; 
+
+proc npar1way wilcoxon data=perm.crosssect; 
+class trctot;
+var ddimer;
+run; 
+
+proc npar1way wilcoxon data=perm.crosssect; 
+class aktot;
+var ddimer;
+run; 
+
+proc npar1way data=perm.ddimer_all wilcoxon;
+class ddimerkvar;
+var daoh;
+run;
+
+proc freq data=perm.ddimer_all;
+tables ddimerkvar*event;
+run;
+
+proc glm data=perm.ddimer_all; model ddimer=age; run;
+
+proc format; value ddimerfmt 1='High (>=0.76)' 0='Low (<0.76)'; 
+
+Data perm.ddimer_all;
+set perm.ddimer_all;
+label ddimerkvar=D-dimer;
+run; 
+
+data perm.ddimer_cox; retain cpr age male ddimer ddimerkvar tte event daohprob oprindelses_land_tekst doak vka aktot trctot asa p2y12 hojpred lavpred icseqv icsbin ics lama laba mi hf pvd stroke dement ctd ulcer dmukomp dmkomp dm renal maligntot afli livermild liver;
+drop sampletimedate  cancereks aneurisme levereks vteeks blodningeks opeks rygestatus mipoint hfpoint pvdpoint strokepoint dementpoint chrpulm chrpulmpoint ctdpoint ulcerpoint malign livermildpoint liverpoint dmukomppoint dmkomppoint plegi plegipoint renalpoint malignpoint livermild livermildpoint livermodsev livermodsevpoint tumormet tumormetpoint aids aidspoint dmpoint charlsontot charlsoneks c_status d_foddato dod_dato indldage daoh ;
+set perm.ddimer_all;
+if missing(oprindelses_land_tekst) then oprindelses_land_tekst='Danmark';
+if missing(icseqv) then icseqv=0; 
+run; 
+
+data perm.daoh; drop sampletimedate cancereks aneurisme levereks vteeks blodningeks opeks rygestatus mipoint hfpoint pvdpoint strokepoint dementpoint chrpulm chrpulmpoint ctdpoint ulcerpoint malign livermildpoint liverpoint dmukomppoint dmkomppoint plegi plegipoint renalpoint malignpoint livermild livermildpoint livermodsev livermodsevpoint tumormet tumormetpoint aids aidspoint dmpoint charlsontot charlsoneks c_status d_foddato dod_dato vteout vtedato;
+set perm.ddimer_all;
+if c_status=80 then delete;
+if datepart(sampletimedate)>'21JAN2022'd then delete;
+run;
+
+proc npar1way wilcoxon data=perm.daoh; 
+class ddimerkvar;
+var daoh;
+run; 
+proc means data=perm.daoh median q1 q3;
+class ddimerkvar;
+var daoh;
+run; 
+
+libname routput 'F:\XXXX\XXXX\XXXX\R';
+
+data perm.cox_r; keep cpr age male ddimer ddimerkvar crp hojpred lavpred p2y12 aktot icsbin tte event; 
+set perm.ddimer_all;
+if missing(oprindelses_land_tekst) then oprindelses_land_tekst='Danmark';
+if missing(icseqv) then icseqv=0; 
+run; 
+
+data routput.cox_r;
+set perm.cox_r;
+run; 
+
+data perm.daoh_r; keep cpr age male ddimer ddimerkvar crp hojpred lavpred p2y12 aktot icsbin daoh;  
+set perm.ddimer_all;
+if c_status=80 then delete;
+if datepart(sampletimedate)>'21JAN2022'd then delete;
+run;
+
+data routput.daoh_r;  
+set perm.daoh_r;
+run; 
+
+data base;
+set perm.ddimer_cox;
+	label male='Sex';
+	label age='Age (years), mean (SD)';
+	label BMI='BMI, median (IOR)' ;
+	label fev1p='FEV1 (% of predicted), median (IQR)';
+	label ddimer='D-dimer (mg (FEU)/L), median (IQR)';
+	label crp='CRP (mg/L), median (IQR)';
+if rygestatus2="aktiv ryger" then rygestatus=2;
+if rygestatus2="tidligere ryger" then rygestatus=1;
+if rygestatus2="aldrig ryger" then rygestatus=0;
+if rygestatus2="." then rygestatus=".";
+overall=1;
+run; 
+
+data contributedtime;
+set base;
+if ddimerkvar=1 then ttehoj=tte; else ttehoj=0;
+if ddimerkvar=0 then ttelav=tte; else ttelav=0;
+run; 
+
+proc summary data=contributedtime ;
+var tte ttehoj ttelav; 
+output out=ttesum sum=;
+run; 
+
+data ttesum;
+set ttesum;
+tteyear=tte/365.25;
+ttehojyear=ttehoj/365.25;
+ttelavyear=ttelav/365.25;
+run; 
+
+proc print data=ttesum;
+run; 
+
+
+proc format;
+value yesno_	1='   Yes'
+				0='   No'
+				.='   Missing';
+value male_		1='   Sex, male, n (%)'
+				0='   Sex, female, n (%)';
+value ddimerkvar_	1='   High level'
+					0='   Low level';
+value tobak_ 	2='   Current smoker, n (%)'
+				1='   Former smoker, n (%)'
+				0='   Never smoker, n (%)'
+				.='   Missing, n (%)';
+value mi_ 		1='   Myocardial infarction, n (%)'
+				0='   No MI, n (%)';
+value hf_ 		1='   Congestive heart failure, n (%)'
+				0='   No CHF, n (%)';
+value afli_ 	1='   Atrial fibrillation or flutter, n (%)'
+				0='   No AFLI, n (%)';
+value stroke_ 	1='   Cerebrovascular disease, n (%)'
+				0='   No stroke, n (%)';
+value dement_ 	1='   Dementia, n (%)'
+				0='   No dementia, n (%)';
+value liver_ 	1='   Liver disease (mild?), n (%)'
+				0='   No liver disease, n (%)';
+value ulcer_ 	1='   Peptic ulcer disease, n (%)'
+				0='   No ulcer, n (%)';
+value ctd_ 		1='   Connective tissue disease, n (%)'
+				0='   No CTD, n (%)';
+value dm_ 		1='   Diabetes mellitus, n (%)'
+				0='   No DM, n (%)';
+value renal_ 	1='   Renal disease, n (%)'
+				0='   No renal disease, n (%)';
+value maligntot_ 1='   Prior malignancy, n (%)'
+				0='   No malign, n (%)';
+value aktot_ 	1='   Anticoagulant treatment, n (%)'
+				0='   No AC-treatment, n (%)';
+value doak_ 	1='   - Direct oral anticoagulant, n (%)'
+				0='   No doak, n (%)';
+value vka_ 		1='   - Vitamin-K antagonist, n (%)'
+				0='   No VKA, n (%)';
+value trctot_ 	1='   Antiplatelet treatment, n (%)'
+				0='   No TRCinhib, n (%)';
+value asa_ 		1='   - Acetylsalicylic acid, n (%)'
+				0='   No ASA, n (%)';
+value p2y12_ 	1='   - P2Y12-inhibitor, n (%)'
+				0='   No p2y12, n (%)';
+value hojpred_ 	1='   Prednisolon >=25mg/dose, n (%)'
+				0='   No hojpred, n (%)';
+value lavpred_ 	1='   Prednisolon <25mg/dose, n (%)'
+				0='   No lavpred, n (%)';
+value icsbin_ 	1='   Inhaled corticosteroids, n (%)'
+				0='   No ICS, n (%)';
+value lama_ 	1='   Inhaled long-acting musarinic antagonist, n (%)'
+				0='   No LAMA, n (%)';
+value laba_ 	1='   Inhaled long-acting beta2-agonist, n (%)'
+				0='   No LABA, n (%)';
+
+value overall 1='Overall';
+picture pctfmt(round)low-high= ' 009.9)' (prefix='(');
+run;
+
+proc template;
+	define style styles.janettables;
+		parent=styles.minimal;
+		
+		style bodyDate from bodyDate / 
+			font=('Times',8pt);
+		style PagesDate from PagesDate /
+			font=('Times',8pt);
+		style PagesTitle from PagesTitle / 
+			font=('Times',8pt);
+		style SystemTitle from SystemTitle /
+			font=('Times',12pt);
+		style Data from Data / 
+			font=('Times, Times, Times',8pt);
+		style Header from HeadersAndFooters /
+			font=('Times, Times, Times',8pt);
+		style RowHeader from HeadersAndFooters /
+			font=('Times, Times, Times',8pt);
+			end;
+run; 
+
+ods rtf style=janettables file="F:\XXXX\XXXX\XXXX\Output\baselinetable230123.rtf";
+title1 "Baseline frequencies, overall and by D-dimer level";
+
+proc tabulate data=test missing order=data;
+	class		ddimerkvar male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba overall;
+	classlev 	male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba overall /style=[cellwidth=3in asis=on]; /**/
+	tables		male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba,
+				overall=''*(n*f=4.0 colpctn='(%)'*f=pctfmt.)
+				ddimerkvar=	'D-dimer'*(n*f=4.0 colpctn='(%)'*f=pctfmt.)
+				/misstext='0' rts=15;
+	format		ddimerkvar ddimerkvar_. male male_. rygestatus tobak_. mi mi_. hf hf_. afli afli_. stroke stroke_. dement dement_. liver liver_. ulcer ulcer_. ctd ctd_. 
+				dm dm_. renal renal_. maligntot maligntot_. aktot aktot_. doak doak_. vka vka_. trctot trctot_. asa asa_. p2y12 p2y12_. 
+				hojpred hojpred_. lavpred lavpred_. icsbin icsbin_. lama lama_. laba laba_. overall overall.;
+run; 
+ods rtf close; 
+
+ods rtf style=janettables file="F:\\XXXX\XXXX\XXXX\Output\baselinetablemeans230123.rtf";
+
+title1 "Baseline means, overall and by ddimer level - normal ";
+
+proc tabulate data=test missing order=formatted ; 
+	class overall ddimerkvar;
+	var age fev1p bmi ddimer crp; 
+	tables	age fev1p bmi ddimer crp,
+			overall=''*(n*f=4.0 mean*f=6.1 stddev*f=6.1 nmiss*f=6.1) 
+			ddimerkvar=''*(n*f=4.0 mean*f=6.1 stddev*f=6.1 nmiss*f=6.1) ; 
+	format overall overall. ddimerkvar ddimerkvar_. ;
+run; 
+
+title1 "Baseline means, overall and by ddimer level - not normal";
+
+proc tabulate data=test missing order=formatted ; 
+	class overall ddimerkvar;
+	var fev1p bmi ddimer crp; 
+	tables	fev1p bmi ddimer crp,
+			overall=''*(n*f=4.0 median*f=6.1 q1*f=6.1 q3*f=6.1 nmiss*f=6.1) 
+			ddimerkvar=''*(n*f=4.0 median*f=6.1 q1*f=6.1 q3*f=6.1 nmiss*f=6.1) ; 
+	format overall overall. ddimerkvar ddimerkvar_. ;
+run; 
+
+ods rtf close; 
+
+title1;
+title2;
+
+data daohbase; drop rygestatus2; 
+set perm.daoh;
+	label male='Sex';
+	label age='Age (years), mean (SD)';
+	label BMI='BMI, median (IOR)' ;
+	label fev1p='FEV1 (% of predicted), median (IQR)';
+	label ddimer='D-dimer (mg (FEU)/L), median (IQR)';
+	label crp='CRP (mg/L), median (IQR)';
+if rygestatus2="aktiv ryger" then rygestatus=2;
+if rygestatus2="tidligere ryger" then rygestatus=1;
+if rygestatus2="aldrig ryger" then rygestatus=0;
+if rygestatus2="." then rygestatus=".";
+overall=1;
+run; 
+
+ods rtf style=janettables file="F:\XXXX\XXXX\XXXX\Output\baselinetable daoh 230123.rtf";
+title1 "DAOH - Baseline frequencies, overall and by D-dimer level";
+
+proc tabulate data=daohbase missing order=formatted;
+	class		ddimerkvar male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba overall;
+	classlev 	male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba overall /style=[cellwidth=3in asis=on]; /**/
+	tables		male rygestatus mi hf afli stroke dement liver ulcer ctd dm renal maligntot aktot doak vka trctot asa p2y12 hojpred lavpred icsbin lama laba,
+				overall=''*(n*f=4.0 colpctn='(%)'*f=pctfmt.)
+				ddimerkvar=	'D-dimer'*(n*f=4.0 colpctn='(%)'*f=pctfmt.)
+				/misstext='0' rts=15;
+	format		ddimerkvar ddimerkvar_. male male_. rygestatus tobak_. mi mi_. hf hf_. afli afli_. stroke stroke_. dement dement_. liver liver_. ulcer ulcer_. ctd ctd_. 
+				dm dm_. renal renal_. maligntot maligntot_. aktot aktot_. doak doak_. vka vka_. trctot trctot_. asa asa_. p2y12 p2y12_. 
+				hojpred hojpred_. lavpred lavpred_. icsbin icsbin_. lama lama_. laba laba_. overall overall.;
+run; 
+
+
+ods rtf style=janettables file="F:\XXXX\XXXX\XXXX\Output\baselinetable means daoh 230123.rtf";
+title1 "DAOH - Baseline means, overall and by ddimer level - normal ";
+proc tabulate data=daohbase missing order=formatted ; 
+	class overall ddimerkvar;
+	var age fev1p bmi ddimer crp; 
+	tables	age fev1p bmi ddimer crp,
+			overall=''*(n*f=4.0 mean*f=6.1 stddev*f=6.1 nmiss*f=6.1) 
+			ddimerkvar=''*(n*f=4.0 mean*f=6.1 stddev*f=6.1 nmiss*f=6.1) ; 
+	format overall overall. ddimerkvar ddimerkvar_. ;
+run; 
+
+title1 "DAOH - Baseline means, overall and by ddimer level - not normal";
+proc tabulate data=daohbase missing order=formatted ; 
+	class overall ddimerkvar;
+	var fev1p bmi ddimer crp; 
+	tables	fev1p bmi ddimer crp,
+			overall=''*(n*f=4.0 median*f=6.1 q1*f=6.1 q3*f=6.1 nmiss*f=6.1) 
+			ddimerkvar=''*(n*f=4.0 median*f=6.1 q1*f=6.1 q3*f=6.1 nmiss*f=6.1) ; 
+	format overall overall. ddimerkvar ddimerkvar_. ;
+run; 
+ods rtf close; 
+
+proc format; value tobakfmt 3='All patients' 2='Current smokers' 1='Former smokers' 0='Never smokers';
+
+proc means data=perm.crosssect n q1 median q3; 
+var ddimer;
+run; 
+
+proc means data=perm.crosssect n q1 median q3; 
+class rygestatus2;
+var ddimer;
+run; 
+
+data boxplot; keep cpr rygestatus2 rygestatus3 ddimer; 
+set perm.crosssect;
+if missing(rygestatus2) then delete;
+if rygestatus2='aldrig ryger' then rygestatus3=0;
+if rygestatus2='tidligere ryger' then rygestatus3=1;
+if rygestatus2='aktiv ryger' then rygestatus3=2; 
+run; 
+
+data boxplot2; 
+set boxplot; 
+if not missing(rygestatus2) then rygestatus3=3;
+run; 
+
+data boxplot3;
+format rygestatus3 tobakfmt.;
+set boxplot boxplot2;
+run; 
+
+proc npar1way wilcoxon data=perm.crosssect; 
+class rygestatus2;
+var ddimer;
+run; 
+
+data aldrigmodalle;
+set perm.crosssect;
+if missing(rygestatus2) then delete;
+if rygestatus2='aldrig ryger' then rygestatustest=0;
+if rygestatus2='tidligere ryger' then rygestatustest=1;
+if rygestatus2='aktiv ryger' then rygestatustest=1; 
+run; 
+
+proc npar1way wilcoxon data=aldrigmodalle; 
+class rygestatustest;
+var ddimer;
+run; 
+
+
+%SGANNO
+			
+data tobakboxanno;
+%SGTEXT(label="Median (IQR)", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=12,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=79, y1=91, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="[mg (FEU)/L]", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=10,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=79, y1=85.8, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="P-value*", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=12,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=95, y1=91, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="0.44 (0.30 – 0.76)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=75 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.41 (0.27 – 0.76)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=58.1 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.43 (0.30 – 0.76)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=41.5 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.64 (0.46 – 0.89)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=25.1 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")
+%SGTEXT(label="mg (FEU)/L", drawspace="GRAPHPERCENT", justify="right", anchor="topright", x1=59, y1=12 ,textsize=10, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")	
+		
+%SGTEXT(label="0.1984", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center",textsize=12, rotate=0, x1=95, y1=75 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")
+%SGTEXT(label="Smoking status", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=13,textstyle="normal",rotate=90, 
+									textweight="normal", justify="center", anchor="center", x1=4, y1=50, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+
+
+proc template;
+	define statgraph boxplotsvert;
+		begingraph / designwidth=800px designheight=300px pad=(left=14% right=85% top=12%); 
+			layout overlay / xaxisopts=(display=(line ticks tickvalues ) type=linear
+									    linearopts=(tickvaluesequence=(start=0 end=2.5 increment =0.5)
+										viewmin=0 viewmax=1.6) GRIDDISPLAY=on tickvalueattrs=(family="Arial" size=11pt) label='ng/mL') yaxisopts=(display=none tickvalueattrs=(family="Arial" size=12pt) displaysecondary=(line tickvalues)) pad=(left=2% right=2% bottom=1% top=2%) ;
+				boxplot y=ddimer x=rygestatus3/ display=(CAPS FILL MEDIAN OUTLIERS) orient=horizontal fillattrs=(color=grey) medianattrs=(color=black) whiskerattrs=(color=black) dataskin=none;
+			annotate;
+			endlayout;
+		endgraph;
+	end; 
+run; 
+
+
+ods listing gpath='F:\XXXX\XXXX\XXXX\Output' image_dpi=300;
+ods graphics / reset outputfmt=png imagename="tobakboxplots310123"; ods noproctitle;
+proc sgrender data=boxplot3 template=boxplotsvert sganno=tobakboxanno; run;
+
+proc format; value akfmt 2='   All patients' 1='Any A-C therapy' 0=' No A-C therapy';
+
+proc format; value trcfmt 2='   All patients' 1='Any A-P therapy' 0=' No A-P therapy';
+
+proc means data=perm.crosssect n q1 median q3 ; 
+class trctot;
+var ddimer;
+run; 
+proc means data=perm.crosssect n q1 median q3 p90; 
+var ddimer;
+run; 
+
+proc means data=perm.crosssect n q1 median q3; 
+class aktot;
+var ddimer;
+run; 
+
+data akboxplot; keep cpr aktot trctot ddimer; 
+set perm.crosssect;
+run; 
+
+data akboxplot2; 
+set akboxplot; 
+if not missing(aktot) then aktot=2;
+if not missing(trctot) then trctot=2;
+run; 
+
+data akboxplot3;
+format aktot akfmt.;
+format trctot trcfmt.;
+set akboxplot akboxplot2;
+run; 
+
+proc npar1way wilcoxon data=perm.crosssect; 
+class trctot;
+var ddimer;
+run; 
+proc npar1way wilcoxon data=perm.crosssect; 
+class aktot;
+var ddimer;
+run; 
+
+
+%SGANNO
+			
+data akboxanno;
+%SGLINE (drawspace="datavalue", x1=0 ,y1=48.4, x2=100, y2=48.4, linethickness=0.9, linepattern="solid", linecolor="lightgrey", x1space="graphpercent", y1space="graphpercent", x2space="graphpercent", y2space="graphpercent");
+
+%SGTEXT(label="Median (IQR)", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=12,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=79, y1=95, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="[mg (FEU)/L]", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=10,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=79, y1=90.8, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="P-value*", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=12,textstyle="normal", 
+									textweight="normal", justify="left", anchor="center", x1=95, y1=95, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+
+
+
+%SGTEXT(label="0.44 (0.30 – 0.76)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=84.5 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+		
+%SGTEXT(label="0.55 (0.35 – 0.98)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=73.6 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.41 (0.28 – 0.73)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=62.4 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+
+%SGTEXT(label="0.44 (0.30 – 0.76)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=38.5, x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.35 (0.20 – 0.58)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=27.3 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.45 (0.31 – 0.78)", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center", x1=79, y1=16.5 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="mg (FEU)/L", drawspace="GRAPHPERCENT", justify="right", anchor="topright", x1=59, y1=53.4 ,textsize=10, x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="mg (FEU)/L", drawspace="GRAPHPERCENT", justify="right", anchor="topright", x1=59, y1=7.6 ,textsize=10, x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")	
+%SGTEXT(label="0.0003", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center",textsize=12, rotate=0, x1=95, y1=84.5 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")
+%SGTEXT(label="<.0001", drawspace="GRAPHPERCENT",textcolor="black", justify="right", anchor="center",textsize=12, rotate=0, x1=95, y1=38.5 , x1space="graphpercent", y1space="graphpercent",
+									width=1000, widthunit="pixel")
+%SGTEXT(label="Antiplatelet", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=13,textstyle="normal",rotate=90, 
+									textweight="normal", justify="center", anchor="center", x1=4, y1=72, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+%SGTEXT(label="Anticoagulant", drawspace="GRAPHPERCENT",textcolor="black", textfont="arial", textsize=13,textstyle="normal",rotate=90, 
+									textweight="normal", justify="center", anchor="center", x1=4, y1=27.3, x1space="graphpercent", y1space="graphpercent", width=1000, widthunit="pixel")
+;
+
+proc template;
+	define statgraph boxplotsvert;
+		begingraph / designwidth=800px designheight=500px pad=(left=8% right=50% top=6% ); 
+			layout lattice / columns=1 rows=2; 
+			layout overlay / xaxisopts=(display=(line ticks tickvalues ) type=linear
+									    linearopts=(tickvaluesequence=(start=0 end=2.5 increment =0.5)
+										viewmin=0.2 viewmax=2.1) GRIDDISPLAY=on tickvalueattrs=(family="Arial" size=11pt) label='ng/mL') yaxisopts=(display=none tickvalueattrs=(family="Arial" size=12pt) displaysecondary=(line tickvalues)) pad=(left=2% right=2% bottom=1% top=2%) ;
+				boxplot y=ddimer x=trctot/ display=(CAPS FILL MEDIAN OUTLIERS) orient=horizontal fillattrs=(color=grey) medianattrs=(color=black) whiskerattrs=(color=black) dataskin=none;
+			endlayout;
+			layout overlay / xaxisopts=(display=(line ticks tickvalues ) type=linear 
+										linearopts=(tickvaluesequence=(start=0 end=2.5 increment =0.5)
+										viewmin=0.2 viewmax=2.1) GRIDDISPLAY=on tickvalueattrs=(family="Arial" size=11pt) label='ng/mL') yaxisopts=(display=none tickvalueattrs=(family="Arial" size=12pt) displaysecondary=(line tickvalues))  pad=(left=2% right=2% bottom=1% top=2%);
+				boxplot y=ddimer x=aktot/ display=(CAPS FILL MEDIAN OUTLIERS) orient=horizontal fillattrs=(color=grey) medianattrs=(color=black) whiskerattrs=(color=black) dataskin=none;
+			endlayout;
+			annotate;
+			endlayout;
+		endgraph;
+	end;
+run; 
+
+ods listing gpath='F:\XXXX\XXXX\XXXX\Output' image_dpi=300;
+ods graphics / reset outputfmt=png imagename="akboxplots310123"; ods noproctitle;
+proc sgrender data=akboxplot3 template=boxplotsvert sganno=akboxanno; run;
+

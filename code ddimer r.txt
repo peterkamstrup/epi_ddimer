@@ -1,0 +1,353 @@
+library(haven)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(tidyverse)
+setwd("F:/xxxx/xxx/xxxx/R/")
+
+dimer <- data.frame(read_sas("cox_r.sas7bdat", 
+                             NULL))
+
+dimer$ddimerkvar<- factor(dimer$ddimerkvar, levels=c(1,0))
+
+fit <- survfit(Surv(tte,event)~ddimerkvar,data = dimer)
+
+
+CIdimer <- ggsurvplot(fit, data = dimer,
+                      #hvis der skal laves cumhaz skrives "cumhaz", hvis der skal laves cuminc skrives "event", hvis der ikke skal så skal nedenstående linje fjernes og der dannes kaplan meier
+                      fun="event",
+                      #tykkelse af linje 
+                      size = 0.5,
+                      #surv.median.line = 'hv', #hv = horisontal og vertikal
+                      #størrelse af fonts
+                      font.main=c(12,"plain"),
+                      font.x=c(12,"plain"),
+                      font.y=c(12,"plain"),
+                      font.tickslab=c(12,"plain"),
+                      #laver titel
+                      #title = "Survival curve between high and low D-dimer levels",
+                      #ændrer legend titel og labels
+                      legend = c(0.8,0.8),
+                      legend.title = "D-dimer levels",
+                      legend.labs = c("High (\u2265 0.76 mg (FEU)/L)","Low (< 0.76 mg (FEU)/L)"),
+                      #tilføjet p-værdi og conf-interval
+                      pval = TRUE, pval.size=4,
+                      #pval.coord=c(0.5,0.5),
+                      conf.int=F,
+                      #censur eller ej
+                      censor=F,
+                      #tilføjer risk table
+                      risk.table = T, 
+                      tables.height = 0.2,
+                      tables.theme = theme_cleantable(),
+                      #ændrer color palette (use custom color: c("#E7B800", "#2E9FDF"), or brewer color (e.g.: "Dark2"), og ggsci color (e.g.: "jco")
+                      palette=c("#800000","#2E9FDF"),
+                      ggtheme = theme_classic(), #change ggplot theme
+                      #ændrer yakse
+                      ylim=c(0,0.25),
+                      ylab="Cumulative incidence",
+                      #ændrer xakse
+                      xlim=c(0,380),
+                      xlab="Days"
+)
+
+
+CIdimer$table <- ggrisktable(fit,
+                             data=dimer,
+                             color="strata",
+                             palette=c("#800000","#2E9FDF"),
+                             y.text=F, ylab="",xlab="",
+                             break.time.by=c(50), xlim=c(0,380),
+                             tables.theme = theme_cleantable(),font.title=12,
+                             
+)
+print(CIdimer)
+
+10/cm(1) #omregner cm til inches
+#exporterer billedet i png
+png(file="dimercuminc1302.png",
+    width = 18,
+    height = 12,
+    units="cm",
+    res=1200)
+print(CIdimer, newpage = FALSE)
+dev.off()
+
+#Laver ujusteret cox 
+crudecoxddimer <- coxph(Surv(tte,event) ~ ddimerkvar, dimer)
+
+#Loader smcfcs
+library(smcfcs)
+#Sætter seed mhp reproduktivitet
+set.seed(21312)
+#Laver multiple imputation
+imps <- smcfcs(dimer,smtype="coxph",smformula="Surv(tte,event) ~ CRP+age+aktot+hojpred+lavpred+male+icsbin+ddimerkvar", method=c("","","norm","","","","","","","","","",""), m=100,numit=20, rjlimit=2000)
+#Gemmer MI filen permanent
+save(imps,file="impsdimercox2301.RData")
+
+
+#Henter MI filerne fra permanent
+load("F:/xxxx/xxx/xxxx/R/impsdimercox2301.RData"
+     
+       if (requireNamespace("mitools", quietly=TRUE)) {
+       library(mitools)
+       impobj <- imputationList(imps$impDatasets)
+       modelsdimer <- with(impobj, coxph(Surv(tte,event) ~ ddimerkvar+age+male))
+       summary(MIcombine(modelsdimer))
+       dimersum <- summary(MIcombine(modelsdimer))
+       dimersum$hrest<-exp(dimersum$results)
+       dimersum$hrlower<-exp(dimersum$"(lower")
+       dimersum$hrupper<-exp(dimersum$"upper)") }
+     
+     #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+     MIcombineP <- function(MIcombineRes,digits=3) {
+       tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+       round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+     #caller funktionen
+     pdimer<-MIcombineP(MIcombine(modelsdimer))
+     
+     #lægger p-værdier ind 
+     pvaluedimer<-data.frame(keyName=names(pdimer), pvalue=pdimer, row.names=NULL)
+     dimer2<-cbind(dimersum,pvaluedimer)
+     dimer2$keyName <- NULL
+     library(writexl)
+     
+     #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+     dimer3<-cbind("DDIMER-model"=rownames(dimer2), dimer2)
+     write_xlsx(dimer3,path="F:\\xxxx\\xxx\\xxxx\\Output\\ddimeragesex2301.xlsx")
+     
+     
+     
+     if (requireNamespace("mitools", quietly=TRUE)) {
+       library(mitools)
+       impobj <- imputationList(imps$impDatasets)
+       modelsdimer2 <- with(impobj, coxph(Surv(tte,event) ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin))
+       summary(MIcombine(modelsdimer2))
+       dimersum <- summary(MIcombine(modelsdimer2))
+       dimersum$hrest<-exp(dimersum$results)
+       dimersum$hrlower<-exp(dimersum$"(lower")
+       dimersum$hrupper<-exp(dimersum$"upper)") }
+     
+     #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+     #caller funktionen
+     pdimer<-MIcombineP(MIcombine(modelsdimer2))
+     
+     #lægger p-værdier ind 
+     pvaluedimer<-data.frame(keyName=names(pdimer), pvalue=pdimer, row.names=NULL)
+     dimer2<-cbind(dimersum,pvaluedimer)
+     dimer2$keyName <- NULL
+     library(writexl)
+     
+     #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+     dimer3<-cbind("DDIMER-model"=rownames(dimer2), dimer2)
+     write_xlsx(dimer3,path="F:\\xxxx\\xxx\\xxxx\\Output\\ddimeradj2301.xlsx")
+     
+     
+     #FULLY ADJUSTED MED AK-INTERAKT
+     
+     if (requireNamespace("mitools", quietly=TRUE)) {
+       library(mitools)
+       impobj <- imputationList(imps$impDatasets)
+       modelsdimer3 <- with(impobj, coxph(Surv(tte,event) ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin+aktot*ddimerkvar))
+       summary(MIcombine(modelsdimer3))
+       dimersum <- summary(MIcombine(modelsdimer3))
+       dimersum$hrest<-exp(dimersum$results)
+       dimersum$hrlower<-exp(dimersum$"(lower")
+       dimersum$hrupper<-exp(dimersum$"upper)") }
+     
+     #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+     #caller funktionen
+     pdimer<-MIcombineP(MIcombine(modelsdimer3))
+     
+     #lægger p-værdier ind 
+     pvaluedimer<-data.frame(keyName=names(pdimer), pvalue=pdimer, row.names=NULL)
+     dimer3<-cbind(dimersum,pvaluedimer)
+     dimer3$keyName <- NULL
+     library(writexl)
+     
+     #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+     dimer4<-cbind("DDIMER-model"=rownames(dimer3), dimer3)
+     write_xlsx(dimer4,path="F:\\xxxx\\xxx\\xxxx\\Output\\ddimeradj2301INTAK.xlsx")
+     
+     
+     #FULLY ADJUSTED MED AP-INTERAKT
+     
+     if (requireNamespace("mitools", quietly=TRUE)) {
+       library(mitools)
+       impobj <- imputationList(imps$impDatasets)
+       modelsdimer3 <- with(impobj, coxph(Surv(tte,event) ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin+p2y12*ddimerkvar))
+       summary(MIcombine(modelsdimer3))
+       dimersum <- summary(MIcombine(modelsdimer3))
+       dimersum$hrest<-exp(dimersum$results)
+       dimersum$hrlower<-exp(dimersum$"(lower")
+       dimersum$hrupper<-exp(dimersum$"upper)") }
+     
+     #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+     #caller funktionen
+     pdimer<-MIcombineP(MIcombine(modelsdimer3))
+     
+     #lægger p-værdier ind 
+     pvaluedimer<-data.frame(keyName=names(pdimer), pvalue=pdimer, row.names=NULL)
+     dimer3<-cbind(dimersum,pvaluedimer)
+     dimer3$keyName <- NULL
+     library(writexl)
+     
+     #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+     dimer4<-cbind("DDIMER-model"=rownames(dimer3), dimer3)
+     write_xlsx(dimer4,path="F:\\xxxx\\xxx\\xxxx\\Output\\ddimeradj2301INTAP.xlsx")
+     
+     
+     
+     #Linear imps
+     library(smcfcs)
+     
+     #Sætter seed mhp reproduktivitet
+     
+     set.seed(21312)
+     
+     #Laver multiple imputation
+     
+     daohimps <- smcfcs(daoh,smtype="lm",smformula="daoh ~ CRP+age+aktot+hojpred+lavpred+male+icsbin+ddimerkvar", method=c("","","norm","","","","","","","","",""), m=100,numit=20, rjlimit=2000)
+     #Gemmer MI filen permanent
+     save(daohimps,file="impsdimerdaoh2301.RData")
+     
+          
+     #Henter MI filerne fra permanent
+     load("F:/xxxx/xxx/xxxx/R/impsdimerdaoh2301.RData"
+          
+          #ujusteret linear regression
+          
+          lm.daoh<- lm(daoh~ddimerkvar, data=daoh)
+          summary(lm.daoh)
+          confint(lm.daoh,level=0.95)
+          
+          if (requireNamespace("mitools", quietly=TRUE)) {
+            library(mitools)
+            impobj <- imputationList(daohimps$impDatasets)
+            modelsdaoh <- with(impobj, lm(daoh ~ ddimerkvar))
+            summary(MIcombine(modelsdaoh))
+            daohsum <- summary(MIcombine(modelsdaoh))  }
+          
+          #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+          MIcombineP <- function(MIcombineRes,digits=3) {
+            tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+            round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+          #caller funktionen
+          pdimerdaoh<-MIcombineP(MIcombine(modelsdaoh))
+          
+          #lægger p-værdier ind
+          pvaluedimerdaoh<-data.frame(keyName=names(pdimer), pvalue=pdimerdaoh, row.names=NULL)
+          dimerdaoh<-cbind(daohsum,pvaluedimerdaoh)
+          dimerdaoh$keyName <- NULL
+          library(writexl)
+          
+          #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+          dimerdaoh2<-cbind("DDIMER-model"=rownames(dimerdaoh), dimerdaoh)
+          write_xlsx(dimerdaoh2,path="F:\\xxxx\\xxx\\xxxx\\Output\\daohujust2301.xlsx")
+          
+          if (requireNamespace("mitools", quietly=TRUE)) {
+            library(mitools)
+            impobj <- imputationList(daohimps$impDatasets)
+            modelsdaoh <- with(impobj, lm(daoh ~ ddimerkvar+age+male))
+            summary(MIcombine(modelsdaoh))
+            daohsum <- summary(MIcombine(modelsdaoh))  }
+          
+          #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+          MIcombineP <- function(MIcombineRes,digits=3) {
+            tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+            round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+          #caller funktionen
+          pdimerdaoh<-MIcombineP(MIcombine(modelsdaoh))
+          
+          #lægger p-værdier ind 
+          pvaluedimerdaoh<-data.frame(keyName=names(pdimer), pvalue=pdimerdaoh, row.names=NULL)
+          dimerdaoh<-cbind(daohsum,pvaluedimerdaoh)
+          dimerdaoh$keyName <- NULL
+          library(writexl)
+          
+          #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+          dimerdaoh2<-cbind("DDIMER-model"=rownames(dimerdaoh), dimerdaoh)
+          write_xlsx(dimerdaoh2,path="F:\\xxxx\\xxx\\xxxx\\Output\\daohagesex2301.xlsx")
+          
+          
+          #Fully adjusted
+          
+          if (requireNamespace("mitools", quietly=TRUE)) {
+            library(mitools)
+            impobj <- imputationList(daohimps$impDatasets)
+            modelsdaoh <- with(impobj, lm(daoh ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin))
+            summary(MIcombine(modelsdaoh))
+            daohsum <- summary(MIcombine(modelsdaoh))  }
+          
+          #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+          MIcombineP <- function(MIcombineRes,digits=3) {
+            tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+            round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+          #caller funktionen
+          pdimerdaoh<-MIcombineP(MIcombine(modelsdaoh))
+          
+          #lægger p-værdier ind
+          pvaluedimerdaoh<-data.frame(keyName=names(pdimer), pvalue=pdimerdaoh, row.names=NULL)
+          dimerdaoh<-cbind(daohsum,pvaluedimerdaoh)
+          dimerdaoh$keyName <- NULL
+          library(writexl)
+          
+          #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+          dimerdaoh2<-cbind("DDIMER-model"=rownames(dimerdaoh), dimerdaoh)
+          write_xlsx(dimerdaoh2,path="F:\\xxxx\\xxx\\xxxx\\Output\\daohadj2301.xlsx")
+          
+          
+          #Fully adjusted - with interaction AK
+          
+          if (requireNamespace("mitools", quietly=TRUE)) {
+            library(mitools)
+            impobj <- imputationList(daohimps$impDatasets)
+            modelsdaohinteraktak <- with(impobj, lm(daoh ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin+aktot*ddimerkvar))
+            summary(MIcombine(modelsdaohinteraktak))
+            daohsumak <- summary(MIcombine(modelsdaohinteraktak))  }
+          
+          #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+          MIcombineP <- function(MIcombineRes,digits=3) {
+            tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+            round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+          #caller funktionen
+          pdimerdaohintak<-MIcombineP(MIcombine(modelsdaohinteraktak))
+          
+          #lægger p-værdier ind 
+          pvaluedimerdaohintak<-data.frame(keyName=names(pdimerdaohintak), pvalue=pdimerdaohintak, row.names=NULL)
+          dimerdaoh<-cbind(daohsumak,pdimerdaohintak)
+          dimerdaoh$keyName <- NULL
+          library(writexl)
+          
+          #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+          dimerdaoh2<-cbind("DDIMER-model"=rownames(dimerdaoh), dimerdaoh)
+          write_xlsx(dimerdaoh2,path="F:\\xxxx\\xxx\\xxxx\\Output\\daohadj2301interaktAK.xlsx")
+          
+   
+          #Fully adjusted - with interaction P2Y12
+          
+          if (requireNamespace("mitools", quietly=TRUE)) {
+            library(mitools)
+            impobj <- imputationList(daohimps$impDatasets)
+            modelsdaohinteraktap <- with(impobj, lm(daoh ~ ddimerkvar+age+male+CRP+hojpred+lavpred+icsbin+p2y12*ddimerkvar))
+            summary(MIcombine(modelsdaohinteraktap))
+            daohsumap <- summary(MIcombine(modelsdaohinteraktap))  }
+          
+          #Funktion der kan trække P-værdier ud fra rubins rule i micombine
+          MIcombineP <- function(MIcombineRes,digits=3) {
+            tStat <- MIcombineRes$coefficients/sqrt(diag(MIcombineRes$variance))
+            round(2*pt(-abs(tStat),df=MIcombineRes$df),digits)     }
+          #caller funktionen
+          pdimerdaohintap<-MIcombineP(MIcombine(modelsdaohinteraktap))
+          
+          #lægger p-værdier ind 
+          pvaluedimerdaohintap<-data.frame(keyName=names(pdimerdaohintap), pvalue=pdimerdaohintap, row.names=NULL)
+          dimerdaoh<-cbind(daohsumap,pdimerdaohintap)
+          dimerdaoh$keyName <- NULL
+          library(writexl)
+          
+          #Laver rækkenavne om til en variabel så disse kan eksporteres til excel bagefter
+          dimerdaoh2<-cbind("DDIMER-model"=rownames(dimerdaoh), dimerdaoh)
+          write_xlsx(dimerdaoh2,path="F:\\xxxx\\xxx\\xxxx\\Output\\daohadj2301interaktAP.xlsx")
+          
+          
